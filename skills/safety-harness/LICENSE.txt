@@ -1,0 +1,5 @@
+MIT License
+
+Copyright (c) 2026 agentic-homelab contributors
+
+This skill is distributed under the repository MIT license. See ../../LICENSE.

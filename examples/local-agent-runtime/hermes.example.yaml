@@ -1,0 +1,20 @@
+agent:
+  name: hermes-homelab
+  kind: hermes
+  inventory: ../../templates/inventory/homelab.inventory.example.yaml
+  policy: ../../guardrails/policies/default-policy.yaml
+runtime:
+  service_manager: systemd-or-launchd
+  health_check: "agent status"
+  logs: "/var/log/agent/example.log"
+permissions:
+  default_mode: read-only
+  require_approval_for:
+    - write
+    - destructive
+    - credential-access
+skills:
+  - safety-harness
+  - infrastructure-maintenance
+  - agent-self-management
+

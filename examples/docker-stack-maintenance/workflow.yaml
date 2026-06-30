@@ -1,0 +1,29 @@
+id: docker-stack-maintenance
+title: Docker Stack Maintenance
+risk_default: read
+required_skills:
+  - safety-harness
+  - infrastructure-maintenance
+required_mcp_servers:
+  - docker
+steps:
+  - id: containers
+    action: list_containers
+    risk: read
+  - id: compose
+    action: list_compose_projects
+    risk: read
+  - id: logs
+    action: read_container_logs
+    risk: read
+  - id: plan-update
+    action: plan_stack_update
+    risk: plan
+approval_required_for:
+  - apply_stack_update
+  - prune_resources
+verification:
+  - Containers return to healthy state.
+  - Expected ports respond.
+  - Logs do not show the original error.
+

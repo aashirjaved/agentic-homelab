@@ -1,0 +1,52 @@
+id: diagnostics-bundle
+title: Safe Homelab Diagnostics Bundle
+risk_default: read
+required_skills:
+  - safety-harness
+  - infrastructure-maintenance
+required_mcp_servers:
+  - networking
+  - storage-nas
+  - monitoring
+optional_mcp_servers:
+  - docker
+  - proxmox
+steps:
+  - id: interfaces
+    action: inspect_interfaces
+    risk: read
+  - id: dns
+    action: inspect_dns
+    risk: read
+  - id: tailnet
+    action: inspect_tailnet
+    risk: read
+  - id: local-services
+    action: scan_local_services
+    risk: read
+  - id: disks
+    action: list_disks
+    risk: read
+  - id: pools
+    action: list_pools
+    risk: read
+  - id: backups
+    action: check_backup_freshness
+    risk: read
+  - id: metrics
+    action: query_metrics
+    risk: read
+  - id: incident-summary
+    action: build_incident_summary
+    risk: plan
+approval_required_for:
+  - firewall changes
+  - service restarts
+  - storage changes
+  - credential access
+  - public exposure
+verification:
+  - bundle contains no raw secrets
+  - each finding lists source tool and timestamp
+  - recommended next action is read-only or explicitly approval-gated
+

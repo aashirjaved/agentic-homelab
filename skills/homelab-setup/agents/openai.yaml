@@ -1,0 +1,4 @@
+interface:
+  display_name: "Homelab Setup"
+  short_description: "Plan safe Proxmox, Docker, NAS, monitoring, and local-agent homelab setup"
+  default_prompt: "Use the Homelab Setup skill to inventory goals and constraints, produce a read-only-first setup plan, and require approval before any infrastructure change."

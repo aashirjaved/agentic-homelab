@@ -1,0 +1,64 @@
+homelab:
+  name: proxmox-nas-split
+  owner: you
+  notes: Proxmox compute separated from NAS bulk storage.
+nodes:
+  - id: pve-01
+    role: proxmox
+    address: 192.0.2.20
+    access:
+      preferred: proxmox-api
+      credential_ref: proxmox-readonly
+    risks:
+      - runs-vms
+      - lifecycle-sensitive
+  - id: nas-01
+    role: nas
+    address: 192.0.2.30
+    access:
+      preferred: nas-readonly-api
+      credential_ref: nas-readonly
+    risks:
+      - stores-media
+      - backup-target
+services:
+  - id: docker-vm
+    kind: vm
+    runs_on: pve-01
+    exposure: lan-only
+  - id: jellyfin
+    kind: media
+    runs_on: docker-vm
+    exposure: tailnet-only
+  - id: postgres
+    kind: database
+    runs_on: docker-vm
+    exposure: internal-only
+storage:
+  - id: vm-local-storage
+    kind: proxmox-local
+    mounted_by:
+      - pve-01
+    backup_status: snapshot-only
+  - id: media-nas-share
+    kind: nas-share
+    mounted_by:
+      - docker-vm
+    backup_status: needs-restore-test
+  - id: offsite-backup
+    kind: offsite
+    mounted_by: []
+    backup_status: unknown
+networks:
+  remote_access:
+    tailnet: true
+    public_ingress: false
+  storage_paths:
+    media_over_nfs_or_smb: true
+    databases_on_nas: false
+agents:
+  - id: homelab-agent
+    kind: openclaw-or-hermes
+    status: service
+    model_route_policy: guardrails/model-routing.example.yaml
+

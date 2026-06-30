@@ -1,0 +1,33 @@
+id: proxmox-vm-maintenance
+title: Proxmox VM Maintenance
+risk_default: read
+required_skills:
+  - safety-harness
+  - infrastructure-maintenance
+required_mcp_servers:
+  - proxmox
+steps:
+  - id: inventory
+    action: list_nodes
+    risk: read
+  - id: guests
+    action: list_guests
+    risk: read
+  - id: storage
+    action: list_storage
+    risk: read
+  - id: recent-tasks
+    action: list_recent_tasks
+    risk: read
+  - id: plan
+    action: plan_guest_change
+    risk: plan
+approval_required_for:
+  - apply_guest_change
+  - power_guest
+  - delete_guest
+verification:
+  - Proxmox task status is OK.
+  - Guest reaches expected power state.
+  - Service health check passes if configured.
+

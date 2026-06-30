@@ -1,0 +1,4 @@
+interface:
+  display_name: "Infrastructure Maintenance"
+  short_description: "Run read-only-first maintenance loops for homelab services and infrastructure"
+  default_prompt: "Use the Infrastructure Maintenance skill to inspect read-only state, produce a maintenance plan, require approval for writes, and verify with external signals."

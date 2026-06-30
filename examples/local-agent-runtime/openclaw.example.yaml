@@ -1,0 +1,19 @@
+agent:
+  name: openclaw-homelab
+  kind: openclaw
+  inventory: ../../templates/inventory/homelab.inventory.example.yaml
+  policy: ../../guardrails/policies/default-policy.yaml
+  model_routing: ../../guardrails/model-routing.example.yaml
+skills:
+  - ../../skills/safety-harness
+  - ../../skills/homelab-setup
+  - ../../skills/infrastructure-maintenance
+  - ../../skills/agent-self-management
+mcp_servers:
+  - id: proxmox
+    manifest: ../../packages/mcp-servers/proxmox/mcp.yaml
+    mode: read-only
+  - id: docker
+    manifest: ../../packages/mcp-servers/docker/mcp.yaml
+    mode: read-only
+

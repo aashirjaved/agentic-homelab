@@ -1,0 +1,36 @@
+id: local-agent-runtime
+title: Local Agent Runtime Maintenance
+risk_default: read
+required_skills:
+  - safety-harness
+  - agent-self-management
+required_mcp_servers:
+  - monitoring
+optional_mcp_servers:
+  - docker
+  - networking
+steps:
+  - id: runtime-alerts
+    action: list_alerts
+    risk: read
+  - id: runtime-logs
+    action: read_logs
+    risk: read
+  - id: runtime-metrics
+    action: query_metrics
+    risk: read
+  - id: runtime-network
+    action: scan_local_services
+    risk: read
+  - id: runtime-summary
+    action: build_incident_summary
+    risk: plan
+approval_required_for:
+  - service restarts
+  - credential access
+  - change_scrape_config
+  - firewall changes
+verification:
+  - Agent service remains running during read-only inspection.
+  - Logs show no new startup loop after any approved restart.
+  - Guardrail policy and enabled MCP servers are unchanged unless explicitly approved.

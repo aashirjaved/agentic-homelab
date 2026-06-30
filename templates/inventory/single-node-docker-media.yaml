@@ -1,0 +1,45 @@
+homelab:
+  name: single-node-docker-media
+  owner: you
+  notes: One host running Docker media services and local storage.
+nodes:
+  - id: media-01
+    role: docker-host
+    address: 192.0.2.10
+    access:
+      preferred: ssh
+      credential_ref: media-host-readonly
+    risks:
+      - runs-containers
+      - local-storage
+services:
+  - id: jellyfin
+    kind: media
+    runs_on: media-01
+    exposure: tailnet-only
+  - id: arr-stack
+    kind: media-automation
+    runs_on: media-01
+    exposure: lan-only
+  - id: reverse-proxy
+    kind: ingress
+    runs_on: media-01
+    exposure: lan-only
+storage:
+  - id: media-library
+    kind: local-disk
+    mounted_by:
+      - media-01
+    backup_status: needs-offsite-copy
+networks:
+  remote_access:
+    tailnet: true
+    public_ingress: false
+  outbound_privacy:
+    vpn_provider: unset
+agents:
+  - id: maintenance-agent
+    kind: cursor-or-codex
+    status: on-demand
+    model_route_policy: guardrails/model-routing.example.yaml
+

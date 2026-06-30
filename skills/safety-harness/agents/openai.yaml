@@ -1,0 +1,4 @@
+interface:
+  display_name: "Safety Harness"
+  short_description: "Classify homelab actions, enforce approval gates, and verify outcomes"
+  default_prompt: "Use the Safety Harness skill to classify risk, keep discovery read-only, require explicit approval for risky actions, and verify changes externally."

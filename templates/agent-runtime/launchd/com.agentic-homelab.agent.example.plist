@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.agentic-homelab.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>&lt;agent-binary&gt;</string>
+    <string>--config</string>
+    <string>&lt;agent-config&gt;</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>&lt;agent-workdir&gt;</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AGENTIC_HOMELAB_POLICY</key>
+    <string>&lt;guardrail-policy-path&gt;</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>&lt;agent-log-dir&gt;/agent.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>&lt;agent-log-dir&gt;/agent.err.log</string>
+</dict>
+</plist>

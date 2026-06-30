@@ -1,0 +1,28 @@
+name: default-homelab-policy
+description: Conservative default policy for agent-operated homelabs.
+defaults:
+  mode: read-only
+  require_approval_for:
+    - write
+    - destructive
+    - credential-access
+    - firewall-change
+    - network-route-change
+    - vm-delete
+    - disk-format
+    - poweroff
+allow:
+  - id: inventory-read
+    risk: read
+  - id: health-check
+    risk: read
+  - id: log-read
+    risk: read
+deny_without_approval:
+  - id: delete-resource
+    risk: destructive
+  - id: wipe-disk
+    risk: destructive
+  - id: rotate-credentials
+    risk: credential-access
+

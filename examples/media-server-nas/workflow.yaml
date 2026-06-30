@@ -1,0 +1,35 @@
+id: media-server-nas
+title: Media Server and NAS Reality Check
+risk_default: read
+required_skills:
+  - safety-harness
+  - infrastructure-maintenance
+required_mcp_servers:
+  - docker
+  - storage-nas
+  - networking
+steps:
+  - id: storage-health
+    action: read_smart_health
+    risk: read
+  - id: pools
+    action: list_pools
+    risk: read
+  - id: media-containers
+    action: list_containers
+    risk: read
+  - id: exposure
+    action: scan_local_services
+    risk: read
+  - id: backups
+    action: check_backup_freshness
+    risk: read
+approval_required_for:
+  - apply_share_change
+  - format_disk
+  - expose_service
+verification:
+  - Media service responds.
+  - Mounts are present.
+  - Backup target is not the same failure domain as the source.
+

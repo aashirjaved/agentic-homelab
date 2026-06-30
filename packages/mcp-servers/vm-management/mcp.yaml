@@ -1,0 +1,28 @@
+id: vm-management
+name: VM Management MCP Server
+status: scaffold
+transport: stdio
+risk_default: read
+tools:
+  - name: list_vms
+    risk: read
+    description: List VMs across supported providers.
+  - name: inspect_vm
+    risk: read
+    description: Inspect VM CPU, memory, disk, network, and power state.
+  - name: plan_snapshot
+    risk: plan
+    description: Prepare a snapshot plan and verify available storage.
+  - name: create_snapshot
+    risk: write
+    requires_approval: true
+    description: Create an approved snapshot.
+  - name: resize_vm
+    risk: write
+    requires_approval: true
+    description: Resize VM resources after approval.
+  - name: delete_snapshot
+    risk: destructive
+    requires_approval: true
+    description: Delete a snapshot after explicit approval.
+

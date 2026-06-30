@@ -1,0 +1,36 @@
+id: proxmox
+name: Proxmox MCP Server
+status: scaffold
+transport: stdio
+risk_default: read
+tools:
+  - name: list_nodes
+    risk: read
+    description: List Proxmox cluster nodes and basic status.
+  - name: list_guests
+    risk: read
+    description: List VMs and containers without changing state.
+  - name: get_guest_config
+    risk: read
+    description: Inspect VM or container configuration.
+  - name: list_storage
+    risk: read
+    description: List storage pools, usage, and content types.
+  - name: list_recent_tasks
+    risk: read
+    description: Read recent Proxmox task history for troubleshooting.
+  - name: plan_guest_change
+    risk: plan
+    description: Produce a change plan for resize, migration, backup, or lifecycle actions.
+  - name: apply_guest_change
+    risk: write
+    requires_approval: true
+    description: Apply an approved non-destructive guest change.
+  - name: power_guest
+    risk: write
+    requires_approval: true
+    description: Start, stop, reboot, or shutdown a guest after approval.
+  - name: delete_guest
+    risk: destructive
+    requires_approval: true
+    description: Delete a VM or container after explicit approval.

@@ -1,0 +1,39 @@
+name: default-model-routing
+description: Example policy for deciding which model/runtime an agent may use.
+routes:
+  generation:
+    provider: pi
+    reason: Sanctioned generation path with runtime auditing and privacy controls.
+    allowed_for:
+      - planning
+      - summarization
+      - intent-routing
+      - maintenance-explanations
+  embeddings:
+    provider: local-ollama
+    model: nomic-embed-text
+    reason: Local embeddings only; no generation through this route.
+    allowed_for:
+      - retrieval
+      - memory-search
+  vision:
+    provider: configured-vision-model
+    requires_approval_when:
+      - image_contains_private_data
+      - image_contains_credentials
+  verification:
+    provider: mechanical-first
+    order:
+      - tests
+      - health-endpoints
+      - platform-task-status
+      - logs
+      - independent-model-review
+rules:
+  - id: no-direct-generation-with-embedding-model
+    description: Embedding providers must not be used for generation.
+  - id: verifier-must-not-be-same-loop-self-review
+    description: Verification should use a mechanical check or independent context.
+  - id: document-remote-model-use
+    description: Remote model calls must disclose what class of data is sent.
+

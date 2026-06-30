@@ -1,0 +1,30 @@
+id: storage-nas
+name: Storage NAS MCP Server
+status: scaffold
+transport: stdio
+risk_default: read
+tools:
+  - name: list_disks
+    risk: read
+    description: List disks, identifiers, sizes, and health hints.
+  - name: read_smart_health
+    risk: read
+    description: Read SMART status where available.
+  - name: list_pools
+    risk: read
+    description: List storage pools, datasets, shares, and usage.
+  - name: check_backup_freshness
+    risk: read
+    description: Inspect backup timestamps and identify stale jobs.
+  - name: plan_share_change
+    risk: plan
+    description: Prepare a share, dataset, or permission change plan.
+  - name: apply_share_change
+    risk: write
+    requires_approval: true
+    description: Apply an approved non-destructive share or permission change.
+  - name: format_disk
+    risk: destructive
+    requires_approval: true
+    description: Format a disk after explicit approval.
+

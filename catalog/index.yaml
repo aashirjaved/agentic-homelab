@@ -1,0 +1,192 @@
+name: agentic-homelab
+description: Agent skills, MCP servers, guardrails, and workflows for safe homelab automation.
+version: 0.1.0
+repository:
+  org: aashirjaved
+  name: agentic-homelab
+  slug: aashirjaved/agentic-homelab
+  url: https://github.com/aashirjaved/agentic-homelab
+  skills_install: npx skills add aashirjaved/agentic-homelab --yes
+categories:
+  - proxmox
+  - docker
+  - nas
+  - networking
+  - monitoring
+  - vm-management
+  - local-agents
+docs:
+  - id: docs-index
+    path: docs/index.md
+    description: Documentation index for quick navigation.
+  - id: quickstart
+    path: docs/quickstart.md
+    description: Short safe path from inventory to first read-only agent workflow.
+  - id: agent-lessons-from-sessions
+    path: docs/agent-lessons-from-sessions.md
+    description: Distilled friction points and requirements from local agent sessions.
+  - id: safety-model
+    path: docs/safety-model.md
+    description: Observe, explain, plan, approve, execute, verify safety model.
+  - id: action-risk-matrix
+    path: docs/action-risk-matrix.md
+    description: Concrete action categories, approval decisions, and required evidence.
+  - id: architecture-patterns
+    path: docs/architecture-patterns.md
+    description: Common homelab patterns agents should understand.
+  - id: credential-patterns
+    path: docs/credential-patterns.md
+    description: Credential references, scopes, and redaction rules.
+  - id: maintenance-loop
+    path: docs/maintenance-loop.md
+    description: Repeatable observe-plan-approve-verify loop for day-two homelab operations.
+  - id: workflow-chooser
+    path: docs/workflow-chooser.md
+    description: How to choose a safe first workflow from inventory signals.
+  - id: backup-restore-drills
+    path: docs/backup-restore-drills.md
+    description: How agents should verify backup restore evidence without touching production data.
+  - id: client-compatibility
+    path: docs/client-compatibility.md
+    description: Compatibility matrix for OpenClaw, Hermes, Claude, Codex, Cursor, and Grok.
+  - id: repo-map
+    path: docs/repo-map.md
+    description: Where to add MCP servers, skills, examples, and policies.
+  - id: threat-model
+    path: docs/threat-model.md
+    description: Assets, trust boundaries, risks, and mitigations for agent-operated homelabs.
+  - id: proxmox-readonly-token
+    path: docs/proxmox-readonly-token.md
+    description: How to configure scoped read-only Proxmox API access for agents.
+  - id: quickstart-openclaw
+    path: docs/quickstart-openclaw.md
+    description: Safe starter flow for OpenClaw local homelab agents.
+  - id: quickstart-hermes
+    path: docs/quickstart-hermes.md
+    description: Safe starter flow for Hermes local homelab agents.
+  - id: quickstart-claude
+    path: docs/quickstart-claude.md
+    description: Safe starter flow for Claude-compatible MCP clients.
+  - id: quickstart-codex
+    path: docs/quickstart-codex.md
+    description: Safe starter flow for Codex as a homelab repo operator.
+  - id: quickstart-cursor
+    path: docs/quickstart-cursor.md
+    description: Safe starter flow for Cursor as a homelab coding agent.
+  - id: quickstart-grok
+    path: docs/quickstart-grok.md
+    description: Safe starter flow for Grok as a planning/reference assistant.
+  - id: implemented-capabilities
+    path: docs/implemented-capabilities.md
+    description: Exact list of implemented reference servers, safety assets, and known limits.
+  - id: release-readiness
+    path: docs/release-readiness.md
+    description: Checklist for publishing or recommending the repo.
+  - id: roadmap
+    path: docs/roadmap.md
+    description: Practical next steps for deeper homelab support.
+  - id: playbooks
+    path: playbooks/README.md
+    description: Reproducible infrastructure starters with read-only discovery first.
+templates:
+  - id: inventory-readme
+    path: templates/inventory/README.md
+    description: Guide for choosing and editing inventory templates.
+  - id: homelab-inventory
+    path: templates/inventory/homelab.inventory.example.yaml
+    description: Example machine-readable inventory for agent discovery.
+  - id: homelab-inventory-json
+    path: templates/inventory/homelab.inventory.example.json
+    description: JSON inventory example for dependency-light MCP reference servers.
+  - id: inventory-single-node-docker-media
+    path: templates/inventory/single-node-docker-media.yaml
+    description: Inventory starter for one-host Docker media setups.
+  - id: inventory-proxmox-nas-split
+    path: templates/inventory/proxmox-nas-split.yaml
+    description: Inventory starter for Proxmox compute with separate NAS storage.
+  - id: inventory-local-agent-runtime
+    path: templates/inventory/local-agent-runtime.yaml
+    description: Inventory starter for OpenClaw/Hermes/local-agent hosts.
+  - id: diagnostics-bundle
+    path: templates/diagnostics/README.md
+    description: Redacted support bundle format for agent debugging.
+  - id: agent-runtime-services
+    path: templates/agent-runtime/README.md
+    description: systemd and launchd templates for observable local agent services.
+  - id: agent-instructions
+    path: templates/agent-instructions/README.md
+    description: Copyable AGENTS.md operating contract for homelab agent clients.
+  - id: agent-instructions-template
+    path: templates/agent-instructions/AGENTS.md
+    description: Read-only-first agent instructions for Codex, Claude, Cursor, and local agents.
+  - id: ansible-read-only-audit
+    path: playbooks/ansible/read-only-audit.yml
+    description: Ansible audit playbook for host discovery without changing state.
+  - id: bootstrap-script
+    path: scripts/bootstrap_homelab_repo.py
+    description: Create a starter homelab agent context directory from safe templates.
+  - id: workflow-chooser-script
+    path: scripts/choose_workflow.py
+    description: Recommend example workflows from a YAML or JSON inventory.
+  - id: release-audit-script
+    path: scripts/release_audit.py
+    description: Produce pass/fail/manual release-readiness evidence.
+  - id: workflow-schema
+    path: schemas/workflow.schema.json
+    description: Schema for example workflow files.
+  - id: action-risk-matrix-schema
+    path: schemas/action-risk-matrix.schema.json
+    description: Schema for the machine-readable action risk matrix.
+guardrails:
+  - id: model-routing
+    path: guardrails/model-routing.example.yaml
+    description: Example policy for local/remote model routing and verification.
+  - id: action-risk-matrix
+    path: guardrails/action-risk-matrix.yaml
+    description: Machine-readable risk categories for homelab agent actions.
+entries:
+  mcp_servers:
+    - id: proxmox
+      path: packages/mcp-servers/proxmox
+      status: scaffold
+      default_risk: read
+    - id: docker
+      path: packages/mcp-servers/docker
+      status: scaffold
+      default_risk: read
+    - id: storage-nas
+      path: packages/mcp-servers/storage-nas
+      status: scaffold
+      default_risk: read
+    - id: networking
+      path: packages/mcp-servers/networking
+      status: scaffold
+      default_risk: read
+    - id: monitoring
+      path: packages/mcp-servers/monitoring
+      status: scaffold
+      default_risk: read
+    - id: vm-management
+      path: packages/mcp-servers/vm-management
+      status: scaffold
+      default_risk: read
+  skills:
+    - id: homelab-setup
+      path: skills/homelab-setup
+      status: scaffold
+    - id: infrastructure-maintenance
+      path: skills/infrastructure-maintenance
+      status: scaffold
+    - id: agent-self-management
+      path: skills/agent-self-management
+      status: scaffold
+    - id: safety-harness
+      path: skills/safety-harness
+      status: scaffold
+  project:
+    - id: changelog
+      path: CHANGELOG.md
+      status: release
+    - id: code-of-conduct
+      path: CODE_OF_CONDUCT.md
+      status: release

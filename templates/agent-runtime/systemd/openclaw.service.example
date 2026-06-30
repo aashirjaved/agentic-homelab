@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenClaw homelab agent
+Documentation=https://github.com/agentic-homelab/agentic-homelab
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<agent-user>
+Group=<agent-group>
+WorkingDirectory=<agent-workdir>
+EnvironmentFile=<protected-env-file>
+ExecStart=<openclaw-binary> --config <openclaw-config>
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=<agent-state-dir> <agent-log-dir>
+
+[Install]
+WantedBy=multi-user.target

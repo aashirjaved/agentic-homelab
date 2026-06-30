@@ -1,0 +1,63 @@
+---
+- name: Read-only homelab audit
+  hosts: homelab
+  gather_facts: true
+  become: false
+
+  tasks:
+    - name: Capture uptime
+      ansible.builtin.command: uptime
+      changed_when: false
+      failed_when: false
+      register: audit_uptime
+
+    - name: Capture disk usage
+      ansible.builtin.command: df -hT
+      changed_when: false
+      failed_when: false
+      register: audit_disk_usage
+
+    - name: Capture memory usage
+      ansible.builtin.command: free -h
+      changed_when: false
+      failed_when: false
+      register: audit_memory
+
+    - name: Capture failed systemd units
+      ansible.builtin.command: systemctl --failed --no-pager
+      changed_when: false
+      failed_when: false
+      register: audit_failed_units
+
+    - name: Capture listening TCP and UDP ports
+      ansible.builtin.command: ss -tulpen
+      changed_when: false
+      failed_when: false
+      register: audit_listening_ports
+
+    - name: Check whether Docker CLI is available
+      ansible.builtin.command: docker version --format '{{ "{{.Server.Version}}" }}'
+      changed_when: false
+      failed_when: false
+      register: audit_docker_version
+
+    - name: Capture Docker containers when Docker is available
+      ansible.builtin.command: docker ps --format '{{ "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" }}'
+      changed_when: false
+      failed_when: false
+      register: audit_docker_containers
+      when: audit_docker_version.rc == 0
+
+    - name: Print compact audit summary
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          os: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+          kernel: "{{ ansible_kernel }}"
+          uptime: "{{ audit_uptime.stdout | default('unavailable') }}"
+          disk_usage: "{{ audit_disk_usage.stdout_lines | default([]) }}"
+          memory: "{{ audit_memory.stdout_lines | default([]) }}"
+          failed_units: "{{ audit_failed_units.stdout_lines | default([]) }}"
+          listening_ports: "{{ audit_listening_ports.stdout_lines | default([]) }}"
+          docker_version: "{{ audit_docker_version.stdout | default('unavailable') }}"
+          docker_containers: "{{ audit_docker_containers.stdout_lines | default([]) }}"

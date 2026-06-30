@@ -1,0 +1,50 @@
+homelab:
+  name: local-agent-runtime
+  owner: you
+  notes: Homelab focused on running local agents safely.
+nodes:
+  - id: agent-01
+    role: agent-runtime
+    address: 192.0.2.40
+    access:
+      preferred: ssh
+      credential_ref: agent-host-readonly
+    risks:
+      - runs-agents
+      - tool-access
+services:
+  - id: openclaw
+    kind: local-agent
+    runs_on: agent-01
+    exposure: tailnet-only
+  - id: hermes
+    kind: local-agent
+    runs_on: agent-01
+    exposure: tailnet-only
+  - id: ollama
+    kind: embeddings-or-local-model
+    runs_on: agent-01
+    exposure: internal-only
+storage:
+  - id: agent-state
+    kind: local-disk
+    mounted_by:
+      - agent-01
+    backup_status: needs-backup-policy
+networks:
+  remote_access:
+    tailnet: true
+    public_ingress: false
+  model_routing:
+    generation: configured-agent-route
+    embeddings: local
+agents:
+  - id: openclaw
+    kind: openclaw
+    status: service
+    model_route_policy: guardrails/model-routing.example.yaml
+  - id: hermes
+    kind: hermes
+    status: service
+    model_route_policy: guardrails/model-routing.example.yaml
+

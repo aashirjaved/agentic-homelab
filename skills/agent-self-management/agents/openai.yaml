@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Self Management"
+  short_description: "Maintain local agent runtimes without weakening policies, credentials, or tool boundaries"
+  default_prompt: "Use the Agent Self Management skill to inspect local agent runtime health, logs, policies, and tool permissions without changing them unless explicitly approved."

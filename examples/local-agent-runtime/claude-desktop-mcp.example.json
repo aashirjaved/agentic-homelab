@@ -1,0 +1,48 @@
+{
+  "mcpServers": {
+    "agentic-homelab-proxmox": {
+      "command": "python3",
+      "args": ["packages/mcp-servers/proxmox/server.py"],
+      "env": {
+        "AGENTIC_HOMELAB_POLICY": "guardrails/policies/default-policy.yaml",
+        "AGENTIC_HOMELAB_INVENTORY": "homelab.inventory.yaml"
+      }
+    },
+    "agentic-homelab-docker": {
+      "command": "python3",
+      "args": ["packages/mcp-servers/docker/server.py"],
+      "env": {
+        "AGENTIC_HOMELAB_POLICY": "guardrails/policies/default-policy.yaml"
+      }
+    },
+    "agentic-homelab-networking": {
+      "command": "python3",
+      "args": ["packages/mcp-servers/networking/server.py"],
+      "env": {
+        "AGENTIC_HOMELAB_POLICY": "guardrails/policies/default-policy.yaml"
+      }
+    },
+    "agentic-homelab-storage": {
+      "command": "python3",
+      "args": ["packages/mcp-servers/storage-nas/server.py"],
+      "env": {
+        "AGENTIC_HOMELAB_POLICY": "guardrails/policies/default-policy.yaml"
+      }
+    },
+    "agentic-homelab-monitoring": {
+      "command": "python3",
+      "args": ["packages/mcp-servers/monitoring/server.py"],
+      "env": {
+        "AGENTIC_HOMELAB_POLICY": "guardrails/policies/default-policy.yaml"
+      }
+    },
+    "agentic-homelab-vm-management": {
+      "command": "python3",
+      "args": ["packages/mcp-servers/vm-management/server.py"],
+      "env": {
+        "AGENTIC_HOMELAB_POLICY": "guardrails/policies/default-policy.yaml",
+        "AGENTIC_HOMELAB_INVENTORY": "homelab.inventory.json"
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "homelab": {
+    "name": "example-lab",
+    "owner": "you"
+  },
+  "nodes": [
+    {
+      "id": "pve-01",
+      "role": "proxmox",
+      "address": "192.168.1.10",
+      "access": {
+        "preferred": "proxmox-api",
+        "credential_ref": "proxmox-readonly"
+      },
+      "risks": ["runs-vms", "storage-attached"]
+    }
+  ],
+  "services": [
+    {
+      "id": "jellyfin",
+      "kind": "media",
+      "runs_on": "pve-01",
+      "exposure": "tailnet-only"
+    }
+  ],
+  "storage": [
+    {
+      "id": "media-nas",
+      "kind": "nas",
+      "backup_status": "unknown",
+      "mounted_by": ["pve-01"]
+    }
+  ],
+  "agents": [
+    {
+      "id": "local-agent",
+      "kind": "openclaw-or-hermes",
+      "status": "unknown",
+      "model_route_policy": "guardrails/model-routing.example.yaml"
+    }
+  ]
+}

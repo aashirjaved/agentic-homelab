@@ -1,0 +1,30 @@
+id: networking
+name: Networking MCP Server
+status: scaffold
+transport: stdio
+risk_default: read
+tools:
+  - name: inspect_interfaces
+    risk: read
+    description: Read interface addresses, link state, and routes.
+  - name: inspect_dns
+    risk: read
+    description: Inspect DNS configuration and resolution behavior.
+  - name: inspect_tailnet
+    risk: read
+    description: Inspect Tailscale status where installed.
+  - name: scan_local_services
+    risk: read
+    description: Run bounded local-only service discovery.
+  - name: plan_firewall_change
+    risk: plan
+    description: Produce a firewall, route, or ingress change plan.
+  - name: apply_firewall_change
+    risk: write
+    requires_approval: true
+    description: Apply an approved firewall or route change.
+  - name: expose_service
+    risk: destructive
+    requires_approval: true
+    description: Expose a private service to another network or the public internet.
+

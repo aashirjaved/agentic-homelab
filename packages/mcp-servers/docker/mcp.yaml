@@ -1,0 +1,32 @@
+id: docker
+name: Docker MCP Server
+status: scaffold
+transport: stdio
+risk_default: read
+tools:
+  - name: list_containers
+    risk: read
+    description: List containers and health state.
+  - name: inspect_container
+    risk: read
+    description: Inspect one container.
+  - name: list_compose_projects
+    risk: read
+    description: Discover Compose projects and stack files.
+  - name: list_volumes
+    risk: read
+    description: List Docker volumes and mountpoints.
+  - name: read_container_logs
+    risk: read
+    description: Read bounded recent logs for a container.
+  - name: plan_stack_update
+    risk: plan
+    description: Build an update plan before pulling images or restarting services.
+  - name: apply_stack_update
+    risk: write
+    requires_approval: true
+    description: Pull, recreate, or restart services after approval.
+  - name: prune_resources
+    risk: destructive
+    requires_approval: true
+    description: Remove unused images, containers, networks, or volumes after approval.

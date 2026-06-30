@@ -1,0 +1,27 @@
+id: monitoring
+name: Monitoring MCP Server
+status: scaffold
+transport: stdio
+risk_default: read
+tools:
+  - name: list_alerts
+    risk: read
+    description: List active and recent alerts.
+  - name: query_metrics
+    risk: read
+    description: Query bounded metrics for a service or node.
+  - name: read_logs
+    risk: read
+    description: Read bounded recent logs from configured sources.
+  - name: build_incident_summary
+    risk: plan
+    description: Summarize symptoms, affected services, and likely causes.
+  - name: silence_alert
+    risk: write
+    requires_approval: true
+    description: Silence or acknowledge an alert after approval.
+  - name: change_scrape_config
+    risk: write
+    requires_approval: true
+    description: Change monitoring configuration after approval.
+

@@ -1,0 +1,101 @@
+name: homelab-action-risk-matrix
+description: Practical risk categories for agent-operated homelab actions.
+version: 0.1.0
+categories:
+  - id: read
+    decision: allow_readonly
+    requires_approval: false
+    examples:
+      - list nodes, guests, containers, disks, alerts, and services
+      - read bounded logs
+      - inspect DNS, interfaces, routes, and local-only ports
+      - check backup timestamps and SMART summaries
+    required_evidence:
+      - command or MCP tool stays read-only
+      - output is bounded and redacted
+  - id: plan
+    decision: allow_readonly
+    requires_approval: false
+    examples:
+      - propose Docker stack update commands
+      - draft a firewall change without applying it
+      - prepare a VM snapshot plan
+      - build an incident summary
+    required_evidence:
+      - plan states target and exact proposed action
+      - plan includes rollback and verifier
+      - no state-changing command is executed
+  - id: write
+    decision: approval_required
+    requires_approval: true
+    examples:
+      - edit service configuration
+      - apply package or container updates
+      - create a snapshot
+      - restart a service, container, VM, or agent runtime
+    required_evidence:
+      - explicit human approval for the exact target and action
+      - rollback path
+      - external verifier
+  - id: credential-access
+    decision: approval_required
+    requires_approval: true
+    examples:
+      - read or rotate API tokens
+      - change users, groups, or permissions
+      - broaden MCP server credentials
+      - print environment values that may contain secrets
+    required_evidence:
+      - credential reference, not secret value
+      - scoped purpose and time window
+      - redaction plan
+  - id: network-exposure
+    decision: approval_required
+    requires_approval: true
+    examples:
+      - change firewall rules
+      - expose a service through a tunnel, reverse proxy, DNS, or port forward
+      - change VPN, tailnet, or route policy
+    required_evidence:
+      - intended audience
+      - authentication check
+      - exposure scope
+      - rollback command
+  - id: storage-risk
+    decision: approval_required
+    requires_approval: true
+    examples:
+      - change shares, mount points, datasets, pools, or backup jobs
+      - delete snapshots
+      - move application data
+      - prune volumes
+    required_evidence:
+      - backup freshness
+      - restore path
+      - exact target identifiers
+      - free-space check
+  - id: destructive
+    decision: destructive_approval_required
+    requires_approval: true
+    examples:
+      - delete VMs, containers, volumes, datasets, or backups
+      - format disks or change partitions
+      - power off infrastructure
+      - prune Docker resources
+      - wipe logs needed for diagnosis
+    required_evidence:
+      - separate destructive-action approval
+      - target identifier repeated by the human
+      - verified backup or explicit no-backup acknowledgement
+      - recovery plan
+  - id: unknown
+    decision: unknown_requires_review
+    requires_approval: true
+    examples:
+      - any tool not declared in an MCP manifest
+      - any shell command the agent cannot classify
+      - any action with ambiguous target or effect
+    required_evidence:
+      - classify action before execution
+      - prefer read-only alternative
+      - add manifest or policy entry if recurring

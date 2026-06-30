@@ -1,0 +1,41 @@
+id: backup-restore-drill
+title: Backup Restore Drill
+risk_default: read
+required_skills:
+  - safety-harness
+  - infrastructure-maintenance
+required_mcp_servers:
+  - storage-nas
+optional_mcp_servers:
+  - monitoring
+  - docker
+steps:
+  - id: disks
+    action: list_disks
+    risk: read
+  - id: pools
+    action: list_pools
+    risk: read
+  - id: backup-freshness
+    action: check_backup_freshness
+    risk: read
+  - id: smart-health
+    action: read_smart_health
+    risk: read
+  - id: related-alerts
+    action: list_alerts
+    risk: read
+  - id: related-containers
+    action: list_containers
+    risk: read
+approval_required_for:
+  - storage changes
+  - apply_share_change
+  - format_disk
+  - prune_resources
+verification:
+  - Backup target is not the same failure domain as the source.
+  - Last successful backup timestamp is known.
+  - Last successful restore test timestamp is known or marked missing.
+  - Test-restore plan uses a non-production destination.
+  - Any restore, mount, copy, prune, or delete is separately approved.

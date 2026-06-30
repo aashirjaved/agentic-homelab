@@ -1,0 +1,40 @@
+id: multi-node-monitoring
+title: Multi-Node Monitoring Triage
+risk_default: read
+required_skills:
+  - safety-harness
+  - infrastructure-maintenance
+required_mcp_servers:
+  - monitoring
+optional_mcp_servers:
+  - networking
+  - docker
+  - proxmox
+steps:
+  - id: active-alerts
+    action: list_alerts
+    risk: read
+  - id: recent-metrics
+    action: query_metrics
+    risk: read
+  - id: bounded-logs
+    action: read_logs
+    risk: read
+  - id: incident-summary
+    action: build_incident_summary
+    risk: plan
+  - id: local-network-context
+    action: inspect_interfaces
+    risk: read
+  - id: local-service-context
+    action: scan_local_services
+    risk: read
+approval_required_for:
+  - silence_alert
+  - change_scrape_config
+  - service restarts
+  - firewall changes
+verification:
+  - Alert state is unchanged during read-only triage.
+  - Incident summary cites concrete logs, metrics, or alerts.
+  - Any remediation plan includes owner, rollback, and verifier.
