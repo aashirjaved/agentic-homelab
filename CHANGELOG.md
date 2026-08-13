@@ -9,6 +9,34 @@ changes, safety changes, and compatibility notes.
 
 - Nothing yet.
 
+## 0.1.1 - 2026-08-13
+
+### Fixed
+
+- `make validate` no longer fails on a fresh clone (restored `Unreleased`
+  changelog section required by the release audit) and validation failures now
+  print the failing audit items instead of an empty message.
+- MCP servers respond to failed tool calls with the request id and `isError`
+  instead of `id: null` protocol errors that hang clients.
+- Manifest-declared destructive tools now receive the stricter
+  `destructive_approval_required` decision with the evidence checklist.
+
+### Added
+
+- Known-destructive command patterns (`rm -rf`, `mkfs`, `zfs destroy`, ...) are
+  force-classified as destructive regardless of the supplied label.
+- `generate_mcp_config.py --env` bakes `PROXMOX_*` credentials into configs for
+  desktop MCP clients.
+- Claude Code `PreToolUse` hook (`guardrails/hooks/pretooluse-guardrail.sh`)
+  turning the guardrail checker into a mechanical gate, and an Enforcement
+  Model section in the safety docs.
+- YAML frontmatter in all `SKILL.md` files for skills-ecosystem discovery.
+
+### Changed
+
+- README: venv activation step in Quick Start, exit-code contract note,
+  defensible read-only headline, plain v0.1 status wording.
+
 ## 0.1.0 - 2026-08-13
 
 ### Added
