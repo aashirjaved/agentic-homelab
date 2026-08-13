@@ -62,6 +62,36 @@ def find_matrix_category(action: str) -> dict[str, Any] | None:
     return None
 
 
+def load_policy() -> dict[str, Any]:
+    path = ROOT / "guardrails" / "policies" / "default-policy.yaml"
+    if not path.exists():
+        return {}
+    policy = load_yaml(path) or {}
+    policy["_path"] = str(path.relative_to(ROOT))
+    return policy
+
+
+def apply_policy(result: dict[str, Any]) -> dict[str, Any]:
+    """Escalate decisions according to the active policy; never relax them."""
+    policy = load_policy()
+    if not policy:
+        return result
+    defaults = policy.get("defaults", {})
+    mode = defaults.get("mode", "read-only")
+    require_approval = set(defaults.get("require_approval_for", []))
+    risk = result.get("risk")
+    if result.get("decision") == "allow_readonly" and (
+        risk in require_approval or (mode == "read-only" and risk not in {"read", "plan"})
+    ):
+        result["decision"] = "approval_required"
+        result["next_step"] = (
+            "Policy requires approval for this risk. State target, exact command/tool, "
+            "expected effect, rollback, and verifier."
+        )
+    result["policy"] = {"name": policy.get("name"), "mode": mode, "path": policy["_path"]}
+    return result
+
+
 def classify(action: str, server: str | None = None) -> dict[str, Any]:
     lowered = action.lower()
     if any(pattern in lowered for pattern in DENY_PATTERNS):
@@ -149,7 +179,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    result = classify(args.action, args.server)
+    result = apply_policy(classify(args.action, args.server))
     if args.format == "json":
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
@@ -162,6 +192,8 @@ def main() -> int:
             for evidence in result["required_evidence"]:
                 print(f"- {evidence}")
         print(f"next_step: {result['next_step']}")
+        if result.get("policy"):
+            print(f"policy: {result['policy']['name']} (mode: {result['policy']['mode']})")
     return 0 if result["decision"] == "allow_readonly" else 2
 
 

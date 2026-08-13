@@ -112,6 +112,38 @@ def assert_proxmox_api_formatting() -> None:
             raise AssertionError("get_guest_config leaked secret-like config data")
 
 
+def live_checks() -> None:
+    """Optional checks against real infrastructure; skip cleanly when absent."""
+    import shutil
+
+    if shutil.which("docker") and subprocess.run(
+        ["docker", "info"], capture_output=True, timeout=10, check=False
+    ).returncode == 0:
+        responses = run_server(
+            ROOT / "packages" / "mcp-servers" / "docker" / "server.py",
+            [{"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+              "params": {"name": "list_containers", "arguments": {}}}],
+        )
+        result = responses[0]
+        assert result.get("id") == 7, f"live docker call lost its request id: {result}"
+        assert not result.get("result", {}).get("isError"), f"live docker call errored: {result}"
+        print("live: docker list_containers OK")
+    else:
+        print("live: docker unavailable, skipped")
+
+    if os.environ.get("PROXMOX_API_URL"):
+        responses = run_server(
+            ROOT / "packages" / "mcp-servers" / "proxmox" / "server.py",
+            [{"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+              "params": {"name": "list_nodes", "arguments": {}}}],
+        )
+        result = responses[0]
+        assert result.get("id") == 8, f"live proxmox call lost its request id: {result}"
+        print("live: proxmox list_nodes responded with correlated id")
+    else:
+        print("live: PROXMOX_API_URL not set, skipped")
+
+
 def main() -> int:
     assert_tool_list(
         ROOT / "packages" / "mcp-servers" / "proxmox" / "server.py",
@@ -146,6 +178,8 @@ def main() -> int:
     )
     assert_proxmox_inventory()
     assert_proxmox_api_formatting()
+    if "--live" in sys.argv:
+        live_checks()
     print("MCP smoke tests passed")
     return 0
 

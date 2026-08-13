@@ -31,6 +31,15 @@ Every action an agent wants to take is classified before it runs. Reads flow
 freely; writes stop and ask; destructive operations demand a backup and a
 human repeating the exact target.
 
+```mermaid
+flowchart LR
+    A[Agent proposes action] --> B{guardrail_check}
+    B -->|read / plan| C[Runs immediately]
+    B -->|write / credential| D[Stops: human approval]
+    B -->|destructive| E[Stops: backup verified +\nhuman repeats exact target]
+    B -->|unknown| F[Blocked: classify first]
+```
+
 ## What This Is
 
 `agentic-homelab` is an open-source starter kit for making a homelab
