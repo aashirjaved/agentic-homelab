@@ -1,0 +1,426 @@
+import importlib.util
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("homelab_doctor", ROOT / "scripts/homelab_doctor.py")
+doctor = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader
+sys.modules[SPEC.name] = doctor
+SPEC.loader.exec_module(doctor)
+
+
+class HomelabDoctorTests(unittest.TestCase):
+    def test_builds_graph_and_finds_recovery_and_shared_dependency_risks(self):
+        inventory = {
+            "homelab": {"name": "test-lab"},
+            "nodes": [{"id": "docker-01", "role": "docker"}],
+            "services": [
+                {"id": "jellyfin", "kind": "media", "runs_on": "docker-01", "uses_storage": ["nas"]},
+                {"id": "immich", "kind": "photos", "runs_on": "docker-01", "uses_storage": ["nas"]},
+            ],
+            "storage": [{"id": "nas", "kind": "nas", "mounted_by": ["docker-01"], "backup_status": "unknown"}],
+        }
+        report = doctor.inspect_inventory(inventory)
+        codes = {finding["code"] for finding in report["findings"]}
+        self.assertEqual(report["summary"]["relationships"], 5)
+        self.assertIn("recovery-unproven", codes)
+        self.assertIn("shared-dependency", codes)
+        self.assertTrue(report["read_only"])
+
+    def test_reports_missing_relationship_target(self):
+        report = doctor.inspect_inventory({
+            "homelab": {"name": "broken"},
+            "nodes": [],
+            "services": [{"id": "app", "kind": "web", "runs_on": "missing-host"}],
+        })
+        finding = next(item for item in report["findings"] if item["code"] == "missing-dependency")
+        self.assertEqual(finding["subject"], "app")
+
+    def test_share_report_redacts_private_addresses(self):
+        report = doctor.inspect_inventory({"homelab": {"name": "lab at 192.168.1.20"}, "nodes": []})
+        shared = doctor.redact(doctor.render_markdown(report, shared=True))
+        self.assertNotIn("192.168.1.20", shared)
+        self.assertIn("[redacted-private-address]", shared)
+        self.assertIn("No changes have been made", shared)
+
+    def test_share_report_redacts_home_directory_usernames(self):
+        shared = doctor.redact("daemon unavailable at /Users/alice/.docker/run.sock and /home/bob/data")
+        self.assertNotIn("alice", shared)
+        self.assertNotIn("bob", shared)
+        self.assertIn("/Users/[redacted-user]/", shared)
+
+    def test_loads_yaml_and_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            yaml_path = Path(directory) / "lab.yaml"
+            json_path = Path(directory) / "lab.json"
+            yaml_path.write_text("homelab:\n  name: yaml-lab\nnodes: []\n", encoding="utf-8")
+            json_path.write_text('{"homelab":{"name":"json-lab"},"nodes":[]}', encoding="utf-8")
+            self.assertEqual(doctor.load_inventory(yaml_path)["homelab"]["name"], "yaml-lab")
+            self.assertEqual(doctor.load_inventory(json_path)["homelab"]["name"], "json-lab")
+
+    @patch.object(doctor.shutil, "which", return_value="/usr/bin/docker")
+    def test_discovers_docker_services_mounts_and_health(self, _which):
+        ps = (
+            '{"ID":"abc","Names":"jellyfin","Image":"jellyfin:latest",'
+            '"Status":"Up 2 hours","Ports":"0.0.0.0:8096->8096/tcp"}\n'
+        )
+        inspected = """[{
+          "Name": "/jellyfin",
+          "State": {"Status": "running", "Health": {"Status": "unhealthy"}},
+          "Mounts": [{"Type": "bind", "Source": "/srv/media", "Destination": "/media"}]
+        }]"""
+
+        def runner(command, timeout=10):
+            if command[1] == "ps":
+                return 0, ps, ""
+            return 0, inspected, ""
+
+        inventory, evidence = doctor.docker_discovery(runner)
+        report = doctor.inspect_inventory(inventory, [evidence])
+        service = inventory["services"][0]
+        codes = {finding["code"] for finding in report["findings"]}
+        self.assertEqual(service["uses_storage"], ["volume:media"])
+        self.assertIn("service-unhealthy", codes)
+        self.assertIn("broad-listen", codes)
+        self.assertEqual(evidence["status"], "ok")
+
+    @patch.object(doctor.shutil, "which", return_value=None)
+    def test_unavailable_discovery_is_explicit(self, _which):
+        inventory, evidence = doctor.docker_discovery()
+        self.assertEqual(inventory, {})
+        self.assertEqual(evidence["status"], "unavailable")
+
+    @patch.object(doctor.shutil, "which", return_value=None)
+    def test_local_discovery_keeps_host_and_turns_missing_source_into_finding(self, _which):
+        inventory, evidence = doctor.discover_local()
+        report = doctor.inspect_inventory(inventory, evidence)
+        self.assertEqual(report["summary"]["nodes"], 1)
+        self.assertIn("evidence-gap", {finding["code"] for finding in report["findings"]})
+
+    def test_declared_inventory_overrides_discovered_fields(self):
+        merged = doctor.merge_inventory(
+            {"homelab": {"name": "mine"}, "services": [{"id": "app", "kind": "declared"}]},
+            {"services": [{"id": "app", "kind": "docker-container", "state": "running"}]},
+        )
+        self.assertEqual(merged["services"], [{"id": "app", "kind": "declared", "state": "running"}])
+
+    def test_timeline_records_baseline_then_semantic_changes(self):
+        before = doctor.make_snapshot({
+            "nodes": [{"id": "host", "role": "docker"}],
+            "services": [{"id": "app", "kind": "docker-container", "image": "app:1", "state": "running"}],
+        }, "2026-01-01T00:00:00Z")
+        after = doctor.make_snapshot({
+            "nodes": [{"id": "host", "role": "docker"}],
+            "services": [
+                {"id": "app", "kind": "docker-container", "image": "app:2", "state": "exited"},
+                {"id": "db", "kind": "docker-container", "state": "running"},
+            ],
+        }, "2026-01-02T00:00:00Z")
+        baseline = doctor.build_timeline({"snapshots": []}, before)
+        timeline = doctor.build_timeline({"snapshots": [before]}, after)
+        self.assertEqual(baseline["status"], "baseline")
+        self.assertEqual(timeline["status"], "tracked")
+        changes = {(event["subject"], event["change"]) for event in timeline["events"]}
+        self.assertIn(("app", "image"), changes)
+        self.assertIn(("app", "state"), changes)
+        self.assertIn(("db", "added"), changes)
+        exited = next(event for event in timeline["events"] if event["change"] == "state")
+        self.assertEqual(exited["severity"], "high")
+
+    def test_timeline_reports_no_changes(self):
+        snapshot = doctor.make_snapshot({"nodes": [{"id": "host", "role": "docker"}]}, "2026-01-01T00:00:00Z")
+        current = {**snapshot, "observed_at": "2026-01-02T00:00:00Z"}
+        timeline = doctor.build_timeline({"snapshots": [snapshot]}, current)
+        self.assertEqual(timeline["events"], [])
+
+    def test_history_is_bounded_and_snapshot_excludes_credentials(self):
+        snapshot = doctor.make_snapshot({
+            "nodes": [{"id": "host", "role": "proxmox", "address": "192.168.1.2",
+                       "access": {"credential_ref": "secret-token"}}],
+        }, "2026-01-01T00:00:00Z")
+        serialized = str(snapshot)
+        self.assertNotIn("secret-token", serialized)
+        self.assertNotIn("192.168.1.2", serialized)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.json"
+            history = {"snapshots": [{**snapshot, "observed_at": str(index)} for index in range(5)]}
+            doctor.save_history(path, history, snapshot, limit=3)
+            self.assertEqual(len(doctor.load_history(path)["snapshots"]), 3)
+
+    def test_attach_timeline_replaces_change_history_unknown(self):
+        report = doctor.inspect_inventory({"homelab": {"name": "lab"}, "nodes": []})
+        doctor.attach_timeline(report, {"status": "baseline", "events": [], "previous_observed_at": None,
+                                        "snapshot_count": 1, "history_error": None})
+        self.assertNotIn(doctor.CHANGE_HISTORY_UNKNOWN, report["unknowns"])
+        self.assertTrue(any("baseline" in unknown.lower() for unknown in report["unknowns"]))
+
+    def incident_fixture(self):
+        inventory = {
+            "homelab": {"name": "incident-lab"},
+            "nodes": [{"id": "docker", "role": "docker"}],
+            "services": [
+                {"id": "jellyfin", "kind": "media", "runs_on": "docker", "depends_on": ["dns"]},
+                {"id": "dns", "kind": "dns", "runs_on": "docker", "state": "exited"},
+            ],
+        }
+        return inventory, doctor.inspect_inventory(inventory)
+
+    def test_investigator_ranks_failed_dependency_and_blast_radius(self):
+        inventory, report = self.incident_fixture()
+        result = doctor.investigate(report, inventory, "JELLYFIN")
+        top = result["hypotheses"][0]
+        self.assertEqual(result["target"], "jellyfin")
+        self.assertEqual(top["subject"], "dns")
+        self.assertEqual(top["code"], "service-not-running")
+        self.assertEqual(top["confidence"], "likely")
+        self.assertIn("jellyfin", top["impacted"])
+
+    def test_investigator_uses_relevant_current_timeline_change(self):
+        inventory = {"homelab": {"name": "lab"}, "nodes": [{"id": "host", "role": "docker"}],
+                     "services": [{"id": "app", "kind": "web", "runs_on": "host"}]}
+        report = doctor.inspect_inventory(inventory)
+        report["timeline"] = {"events": [{"at": report["observed_at"], "severity": "medium", "category": "services",
+                                            "subject": "app", "change": "image", "before": "app:1", "after": "app:2"}]}
+        result = doctor.investigate(report, inventory, "app")
+        self.assertEqual(result["hypotheses"][0]["code"], "recent-change")
+        self.assertEqual(result["hypotheses"][0]["score"], 72)
+
+    def test_investigator_handles_unknown_target_with_suggestion(self):
+        inventory, report = self.incident_fixture()
+        result = doctor.investigate(report, inventory, "jellyfinx")
+        self.assertEqual(result["status"], "target-not-found")
+        self.assertIn("jellyfin", result["suggestions"])
+
+    def test_investigator_does_not_invent_cause_without_evidence(self):
+        inventory = {"homelab": {"name": "lab"}, "services": [{"id": "healthy", "kind": "web"}]}
+        report = doctor.inspect_inventory(inventory)
+        result = doctor.investigate(report, inventory, "healthy")
+        self.assertEqual(result["hypotheses"][0]["confidence"], "insufficient-evidence")
+        self.assertEqual(result["hypotheses"][0]["score"], 0)
+
+    def test_recovery_readiness_proven_for_complete_stateless_service(self):
+        inventory = {"services": [{"id": "proxy", "kind": "proxy", "recovery": {
+            "configuration_status": "version-controlled", "secrets_required": False,
+            "data_required": False, "restore_runbook": "docs/restore-proxy.md",
+            "last_restore_test": "2099-01-01T00:00:00Z",
+        }}]}
+        readiness = doctor.service_recovery_readiness(inventory["services"][0], inventory, [])
+        self.assertEqual(readiness["status"], "proven")
+        self.assertEqual(readiness["score"], 100)
+
+    def test_recovery_readiness_partial_with_unverified_restore(self):
+        inventory = {"services": [{"id": "app", "kind": "web", "uses_storage": ["data"], "recovery": {
+            "configuration_status": "version-controlled", "secrets_status": "escrowed",
+            "restore_runbook": "docs/restore-app.md", "last_restore_test": "never",
+        }}], "storage": [{"id": "data", "kind": "volume", "backup_status": "fresh",
+                           "failure_domain": "host", "backup_failure_domain": "nas"}]}
+        edges = [doctor.asdict(edge) for edge in doctor.build_edges(inventory)]
+        readiness = doctor.service_recovery_readiness(inventory["services"][0], inventory, edges)
+        self.assertEqual(readiness["status"], "partial")
+        self.assertIn("restore-test", readiness["missing_evidence"])
+
+    def test_recovery_readiness_unrecoverable_when_data_or_key_is_missing(self):
+        inventory = {"services": [{"id": "vault", "kind": "database", "uses_storage": ["data"], "recovery": {
+            "configuration_status": "verified", "secrets_status": "lost", "restore_runbook": "restore.md",
+            "last_restore_test": "never",
+        }}], "storage": [{"id": "data", "kind": "volume", "backup_status": "missing",
+                           "independent_backup": False}]}
+        edges = [doctor.asdict(edge) for edge in doctor.build_edges(inventory)]
+        readiness = doctor.service_recovery_readiness(inventory["services"][0], inventory, edges)
+        self.assertEqual(readiness["status"], "unrecoverable")
+        self.assertIn("secrets-and-keys", readiness["missing_evidence"])
+        self.assertIn("data-backup", readiness["missing_evidence"])
+
+    def test_attach_recovery_adds_service_level_finding(self):
+        inventory = {"homelab": {"name": "lab"}, "services": [{"id": "app", "kind": "web"}]}
+        report = doctor.inspect_inventory(inventory)
+        doctor.attach_recovery_readiness(report, inventory)
+        self.assertEqual(report["recovery_readiness"]["summary"]["unproven"], 1)
+        self.assertIn("service-recovery-unproven", {finding["code"] for finding in report["findings"]})
+
+    def test_unknown_failure_domain_never_counts_as_separated(self):
+        inventory = {"services": [{"id": "app", "kind": "web", "uses_storage": ["data"], "recovery": {
+            "configuration_status": "verified", "secrets_required": False, "restore_runbook": "restore.md",
+            "last_restore_test": "2099-01-01T00:00:00Z",
+        }}], "storage": [{"id": "data", "kind": "volume", "backup_status": "fresh",
+                           "failure_domain": "host", "backup_failure_domain": "unknown"}]}
+        edges = [doctor.asdict(edge) for edge in doctor.build_edges(inventory)]
+        readiness = doctor.service_recovery_readiness(inventory["services"][0], inventory, edges)
+        domain = next(check for check in readiness["checks"] if check["name"] == "failure-domain-separation")
+        self.assertEqual(domain["state"], "unknown")
+
+    def update_fixture(self, recovery_status="proven", **update):
+        service = {"id": "app", "kind": "web", "state": "running", "health": "healthy", "update": {
+            "available": True, "current_version": "1", "target_version": "2",
+            "release_notes_reviewed": True, "breaking_changes_reviewed": True,
+            "rollback": "pin version 1", "verification": ["endpoint returns 200"], **update,
+        }}
+        inventory = {"services": [service]}
+        report = doctor.inspect_inventory(inventory)
+        report["timeline"] = {"events": []}
+        recovery = {"service": "app", "status": recovery_status, "score": 100 if recovery_status == "proven" else 0}
+        return service, report, recovery
+
+    def test_update_plan_ready_only_when_all_gates_pass(self):
+        service, report, recovery = self.update_fixture()
+        plan = doctor.plan_service_update(service, report, recovery)
+        self.assertEqual(plan["decision"], "ready-for-approval")
+        self.assertIn("Approval is still required", plan["reason"])
+
+    def test_update_plan_blocked_by_unhealthy_service(self):
+        service, report, recovery = self.update_fixture()
+        service["health"] = "unhealthy"
+        plan = doctor.plan_service_update(service, report, recovery)
+        self.assertEqual(plan["decision"], "blocked")
+        self.assertEqual(next(g for g in plan["gates"] if g["name"] == "current-health")["state"], "fail")
+
+    def test_update_plan_blocked_when_release_notes_explicitly_unreviewed(self):
+        service, report, recovery = self.update_fixture(release_notes_reviewed=False)
+        self.assertEqual(doctor.plan_service_update(service, report, recovery)["decision"], "blocked")
+
+    def test_update_plan_caution_for_unknown_recovery_or_recent_change(self):
+        service, report, recovery = self.update_fixture(recovery_status="unproven")
+        report["timeline"] = {"events": [{"subject": "app", "at": report["observed_at"]}]}
+        self.assertEqual(doctor.plan_service_update(service, report, recovery)["decision"], "caution")
+
+    def test_update_intelligence_orders_ready_low_blast_radius_first(self):
+        first, report, recovery = self.update_fixture()
+        second = {**first, "id": "dependency"}
+        inventory = {"services": [first, second, {"id": "consumer", "kind": "web", "depends_on": ["dependency"]}]}
+        report = doctor.inspect_inventory(inventory)
+        report["timeline"] = {"events": []}
+        report["recovery_readiness"] = {"services": [recovery, {**recovery, "service": "dependency"},
+                                                               {**recovery, "service": "consumer"}]}
+        doctor.attach_update_intelligence(report, inventory)
+        self.assertEqual(report["update_intelligence"]["plans"][0]["service"], "app")
+
+    def test_proxmox_discovery_normalizes_nodes_guests_storage_and_tasks(self):
+        responses = {
+            "/nodes": [{"node": "pve-01", "status": "online"}],
+            "/cluster/resources?type=vm": [{"node": "pve-01", "type": "qemu", "vmid": 101,
+                                             "name": "docker-vm", "status": "running"}],
+            "/cluster/tasks?limit=50": [{"node": "pve-01", "id": 101, "type": "qmstart", "status": "OK", "endtime": 100}],
+            "/nodes/pve-01/storage": [{"storage": "local-zfs", "type": "zfspool", "active": 1}],
+        }
+        def getter(path):
+            return {"data": responses[path]}
+        env = {"PROXMOX_API_URL": "https://pve.example", "PROXMOX_API_TOKEN_ID": "id",
+               "PROXMOX_API_TOKEN_SECRET": "secret"}
+        with patch.dict(doctor.os.environ, env, clear=False):
+            inventory, evidence = doctor.proxmox_discovery(getter)
+        self.assertEqual(evidence["status"], "ok")
+        self.assertEqual(inventory["services"][0]["runs_on"], "pve-01")
+        self.assertEqual(inventory["storage"][0]["mounted_by"], ["pve-01"])
+        self.assertEqual(inventory["changes"][0]["type"], "qmstart")
+        self.assertEqual(inventory["changes"][0]["subject"], "docker-vm")
+
+    def test_proxmox_not_configured_is_explicit_but_not_a_failure(self):
+        with patch.dict(doctor.os.environ, {}, clear=True):
+            inventory, evidence = doctor.proxmox_discovery()
+        self.assertEqual(inventory, {})
+        self.assertEqual(evidence["status"], "not-configured")
+
+    def test_host_storage_discovery_uses_private_opaque_ids(self):
+        output = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk1 100 95 5 95% /Users/private\n"
+        inventory, evidence = doctor.host_storage_discovery(lambda command: (0, output, ""))
+        self.assertEqual(evidence["status"], "ok")
+        self.assertEqual(inventory["storage"][0]["id"], "local-filesystem:1")
+        self.assertNotIn("/Users/private", str(inventory))
+        report = doctor.inspect_inventory(inventory)
+        self.assertIn("storage-capacity-critical", {finding["code"] for finding in report["findings"]})
+        self.assertNotIn("recovery-unproven", {finding["code"] for finding in report["findings"]})
+
+    def test_external_tasks_join_unified_timeline(self):
+        report = doctor.inspect_inventory({"homelab": {"name": "lab"}, "nodes": []})
+        doctor.attach_external_changes(report, [{"source": "proxmox", "subject": "101", "type": "qmstop",
+                                                  "status": "ERROR", "timestamp": 100}])
+        event = report["timeline"]["events"][0]
+        self.assertEqual(event["category"], "proxmox")
+        self.assertEqual(event["severity"], "high")
+
+    def test_recent_proxmox_task_correlates_with_guest_incident(self):
+        inventory = {"nodes": [{"id": "pve", "role": "proxmox"}],
+                     "services": [{"id": "docker-vm", "kind": "proxmox-qemu", "runs_on": "pve"}]}
+        report = doctor.inspect_inventory(inventory)
+        observed = doctor.datetime.fromisoformat(report["observed_at"].replace("Z", "+00:00"))
+        recent = (observed - doctor.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        report["timeline"] = {"events": [{"at": recent, "severity": "info", "category": "proxmox",
+                                            "subject": "docker-vm", "change": "qmreboot", "before": None,
+                                            "after": "OK"}]}
+        result = doctor.investigate(report, inventory, "docker-vm")
+        self.assertEqual(result["hypotheses"][0]["code"], "recent-change")
+
+    def test_endpoint_discovery_enriches_service_and_nas_without_retaining_url(self):
+        inventory = {
+            "services": [{"id": "jellyfin", "kind": "media", "healthcheck": {
+                "url": "https://user-visible.example/health", "expected_status": 204}}],
+            "storage": [{"id": "nas", "kind": "nas", "healthcheck": {
+                "url": "https://nas.example/health", "expected_status": [200, 204]}}],
+        }
+        observed, evidence = doctor.endpoint_discovery(inventory, lambda url, timeout: 204)
+        self.assertEqual(evidence["status"], "ok")
+        self.assertEqual(observed["services"][0]["health"], "healthy")
+        self.assertEqual(observed["storage"][0]["state"], "active")
+        self.assertNotIn("example", str(observed))
+
+    def test_endpoint_failure_becomes_component_finding_not_evidence_failure(self):
+        inventory = {"services": [{"id": "app", "kind": "web", "healthcheck": {
+            "url": "https://app.example/health", "expected_status": 200}}]}
+        observed, evidence = doctor.endpoint_discovery(inventory, lambda url, timeout: 503)
+        merged = doctor.merge_observations(inventory, observed)
+        report = doctor.inspect_inventory(merged, [evidence])
+        self.assertEqual(evidence["status"], "ok")
+        self.assertIn("service-unhealthy", {finding["code"] for finding in report["findings"]})
+        self.assertNotIn("evidence-gap", {finding["code"] for finding in report["findings"]})
+
+    def test_endpoint_probe_rejects_embedded_credentials_and_missing_env(self):
+        inventory = {"services": [
+            {"id": "bad", "kind": "web", "healthcheck": {"url": "https://user:pass@example/health"}},
+            {"id": "missing", "kind": "web", "healthcheck": {"url_env": "DOES_NOT_EXIST"}},
+        ]}
+        with patch.dict(doctor.os.environ, {}, clear=True):
+            observed, evidence = doctor.endpoint_discovery(inventory, lambda url, timeout: 200)
+        self.assertEqual(observed["services"], [])
+        self.assertEqual(evidence["status"], "partial")
+        self.assertNotIn("user", evidence["detail"])
+
+    def test_probe_details_are_not_persisted_in_history(self):
+        inventory = {"services": [{"id": "app", "kind": "web", "health": "healthy",
+                                    "healthcheck": {"url": "https://private.example/secret"}}]}
+        snapshot = doctor.make_snapshot(inventory, "2026-01-01T00:00:00Z")
+        self.assertNotIn("private.example", str(snapshot))
+
+    def test_diagnostic_bundle_contains_only_redacted_derived_artifacts(self):
+        report = doctor.inspect_inventory({"homelab": {"name": "lab 192.168.1.10"}, "nodes": []}, [{
+            "source": "docker", "status": "unavailable", "detail": "unix:///Users/alice/.docker/run.sock"}])
+        doctor.attach_recovery_readiness(report, {"services": []})
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "bundle"
+            files = doctor.create_diagnostic_bundle(report, output)
+            self.assertEqual(set(files), {"report.md", "report.json", "manifest.json", "README.md"})
+            combined = "\n".join((output / name).read_text(encoding="utf-8") for name in files)
+            self.assertNotIn("192.168.1.10", combined)
+            self.assertNotIn("alice", combined)
+            self.assertNotIn("raw inventory", (output / "report.json").read_text(encoding="utf-8"))
+            parsed = doctor.json.loads((output / "report.json").read_text(encoding="utf-8"))
+            self.assertTrue(parsed["read_only"])
+            manifest = doctor.json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("credentials", manifest["excluded"])
+
+    def test_diagnostic_bundle_refuses_nonempty_directory(self):
+        report = doctor.inspect_inventory({"homelab": {"name": "lab"}, "nodes": []})
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "user-file.txt").write_text("preserve", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                doctor.create_diagnostic_bundle(report, output)
+            self.assertEqual((output / "user-file.txt").read_text(encoding="utf-8"), "preserve")
+
+
+if __name__ == "__main__":
+    unittest.main()

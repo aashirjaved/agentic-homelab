@@ -1,4 +1,4 @@
-.PHONY: validate test doctor diagnostics-smoke diagnostics-local guardrail-smoke mcp-config bootstrap-smoke workflow-chooser-smoke release-audit
+.PHONY: validate test doctor readiness diagnostics-smoke diagnostics-local guardrail-smoke mcp-config bootstrap-smoke workflow-chooser-smoke release-audit
 
 validate:
 	python3 -m venv .venv
@@ -11,6 +11,9 @@ test:
 	. .venv/bin/activate && python -m unittest discover -s tests -v
 
 doctor:
+	. .venv/bin/activate && python scripts/homelab_doctor.py
+
+readiness:
 	python3 scripts/doctor.py --inventory templates/inventory/homelab.inventory.example.json
 
 diagnostics-smoke:

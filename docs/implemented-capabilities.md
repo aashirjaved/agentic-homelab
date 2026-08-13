@@ -2,6 +2,23 @@
 
 This repo is intentionally honest about what works today.
 
+## Homelab Intelligence Doctor
+
+`scripts/homelab_doctor.py` provides the product-facing, read-only experience:
+
+- no-argument discovery for the local host, Docker, filesystem capacity, DNS,
+  and Tailscale state;
+- optional scoped Proxmox discovery for nodes, guests, storage, and tasks;
+- vendor-neutral service and NAS HTTP health probes that retain no URL/body;
+- a Homelab Graph spanning nodes, services, storage, and dependencies;
+- ranked incident hypotheses, blast radius, evidence, and verification steps;
+- a bounded semantic “what changed?” timeline;
+- per-service recovery readiness and human-controlled update intelligence;
+- Markdown, JSON, redacted single-report, and four-file diagnostic bundle output.
+
+The doctor performs no infrastructure writes. Its only writes are explicitly
+requested local history and report/bundle artifacts.
+
 ## Implemented Reference MCP Servers
 
 All reference servers are read-only by default and are smoke-tested by `make validate`.

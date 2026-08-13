@@ -1,5 +1,7 @@
 # Documentation
 
+- [Homelab doctor](homelab-doctor.md): one-command graph, risks, unknowns, and shareable report
+
 Use this index to find the right document quickly.
 
 ## Start

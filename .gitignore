@@ -17,3 +17,4 @@ __pycache__/
 terraform.tfstate*
 /diagnostics/
 generated/
+.agentic-homelab/

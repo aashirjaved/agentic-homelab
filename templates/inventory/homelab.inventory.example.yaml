@@ -17,12 +17,35 @@ services:
     kind: media
     runs_on: pve-01
     exposure: tailnet-only
+    healthcheck:
+      url_env: JELLYFIN_HEALTH_URL
+      expected_status: 200
+      timeout_seconds: 5
+    uses_storage:
+      - media-nas
+    recovery:
+      configuration_status: version-controlled
+      secrets_required: false
+      restore_runbook: docs/restore-jellyfin.md
+      last_restore_test: unknown
+    update:
+      available: true
+      current_version: 10.10.6
+      target_version: 10.10.7
+      release_notes_reviewed: false
+      rollback: pin image to 10.10.6 and restore configuration if migration occurred
+      verification:
+        - container is healthy
+        - web endpoint returns 200
+        - a known media item plays
 storage:
   - id: media-nas
     kind: nas
     mounted_by:
       - pve-01
     backup_status: unknown
+    failure_domain: nas-chassis
+    backup_failure_domain: unknown
 networks:
   remote_access:
     tailnet: true
@@ -34,4 +57,3 @@ agents:
     kind: openclaw-or-hermes
     status: unknown
     model_route_policy: guardrails/model-routing.example.yaml
-

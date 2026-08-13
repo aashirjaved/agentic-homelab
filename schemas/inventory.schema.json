@@ -56,7 +56,35 @@
         "id": { "type": "string", "minLength": 1 },
         "kind": { "type": "string" },
         "runs_on": { "type": "string" },
-        "exposure": { "type": "string" }
+        "exposure": { "type": "string" },
+        "uses_storage": { "type": "array", "items": { "type": "string" } },
+        "depends_on": { "type": "array", "items": { "type": "string" } },
+        "healthcheck": { "$ref": "#/$defs/healthcheck" },
+        "recovery": {
+          "type": "object",
+          "properties": {
+            "configuration_status": { "type": "string" },
+            "secrets_required": { "type": "boolean" },
+            "secrets_status": { "type": "string" },
+            "data_required": { "type": "boolean" },
+            "restore_runbook": { "type": ["string", "boolean"] },
+            "last_restore_test": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "update": {
+          "type": "object",
+          "properties": {
+            "available": { "type": "boolean" },
+            "current_version": { "type": "string" },
+            "target_version": { "type": "string" },
+            "release_notes_reviewed": { "type": "boolean" },
+            "breaking_changes_reviewed": { "type": "boolean" },
+            "rollback": { "type": ["string", "boolean"] },
+            "verification": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        }
       },
       "additionalProperties": true
     },
@@ -67,7 +95,11 @@
         "id": { "type": "string", "minLength": 1 },
         "kind": { "type": "string" },
         "backup_status": { "type": "string" },
-        "mounted_by": { "type": "array", "items": { "type": "string" } }
+        "mounted_by": { "type": "array", "items": { "type": "string" } },
+        "independent_backup": { "type": "boolean" },
+        "failure_domain": { "type": "string" },
+        "backup_failure_domain": { "type": "string" }
+        ,"healthcheck": { "$ref": "#/$defs/healthcheck" }
       },
       "additionalProperties": true
     },
@@ -81,7 +113,25 @@
         "model_route_policy": { "type": "string" }
       },
       "additionalProperties": true
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "pattern": "^https?://" },
+        "url_env": { "type": "string" },
+        "expected_status": {
+          "oneOf": [
+            { "type": "integer", "minimum": 100, "maximum": 599 },
+            { "type": "array", "items": { "type": "integer", "minimum": 100, "maximum": 599 } }
+          ]
+        },
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 15 }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        { "required": ["url"] },
+        { "required": ["url_env"] }
+      ]
     }
   }
 }
-
