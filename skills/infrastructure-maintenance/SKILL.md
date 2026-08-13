@@ -1,3 +1,8 @@
+---
+name: infrastructure-maintenance
+description: Perform routine homelab maintenance safely: updates, health checks, backups, and diagnostics with read-only-first discipline. Use for any recurring maintenance task.
+---
+
 # Infrastructure Maintenance
 
 ## Purpose

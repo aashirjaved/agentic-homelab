@@ -493,7 +493,8 @@ def validate_diagnostics_generator(errors: list[str]) -> None:
 def validate_guardrail_checker(errors: list[str]) -> None:
     checks = [
         (["list_nodes", "--format", "json"], "allow_readonly"),
-        (["delete_guest", "--server", "proxmox", "--format", "json"], "approval_required"),
+        (["delete_guest", "--server", "proxmox", "--format", "json"], "destructive_approval_required"),
+        (["rm -rf /tank/media", "--format", "json"], "destructive_approval_required"),
         (["network-exposure", "--format", "json"], "approval_required"),
         (["destructive", "--format", "json"], "destructive_approval_required"),
         (["totally_unknown_action", "--format", "json"], "unknown_requires_review"),
@@ -638,7 +639,15 @@ def validate_release_audit(errors: list[str]) -> None:
         timeout=10,
     )
     if proc.returncode != 0:
-        fail(errors, f"release audit failed: {proc.stderr.strip()}")
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        try:
+            report = json.loads(proc.stdout)
+            failing = [i for i in report.get("items", []) if i.get("status") == "fail"]
+            if failing:
+                detail = "; ".join(f"{i.get('name')}: {i.get('evidence')}" for i in failing)
+        except json.JSONDecodeError:
+            pass
+        fail(errors, f"release audit failed: {detail}")
         return
     try:
         data = json.loads(proc.stdout)

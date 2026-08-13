@@ -34,6 +34,8 @@ Use this index to find the right document quickly.
 
 ## Project
 
+- [design-notes.md](design-notes.md)
+
 - [Agent Lessons From Sessions](agent-lessons-from-sessions.md)
 - [Repo Map](repo-map.md)
 - [Release Readiness](release-readiness.md)

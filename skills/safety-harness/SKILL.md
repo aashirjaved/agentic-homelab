@@ -1,3 +1,8 @@
+---
+name: safety-harness
+description: Apply guardrails before an agent touches homelab infrastructure. Use before any task involving root access, secrets, SSH, Proxmox, Docker, NAS, networking, storage, or power operations.
+---
+
 # Safety Harness
 
 ## Purpose

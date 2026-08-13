@@ -4,10 +4,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Safety: read-only first](https://img.shields.io/badge/safety-read--only%20first-blue.svg)](docs/safety-model.md)
 
-**Let AI agents run your homelab without giving them root.** Skills, MCP
-servers, guardrails, templates, and workflows that make Proxmox, Docker, NAS,
-and monitoring agent-operable — read-only by default, with explicit approval
-gates for anything risky.
+**Give AI agents safe, read-only access to your homelab — with approval gates
+ready for when you add writes.** Skills, MCP servers, guardrails, templates,
+and workflows for Proxmox, Docker, NAS, and monitoring. The reference servers
+observe and plan; they deliberately implement zero write operations.
 
 > Practical over hype. Read-only first. Human-approved writes. Mechanical verification.
 
@@ -16,6 +16,7 @@ gates for anything risky.
 ```console
 $ python3 scripts/guardrail_check.py destructive
 action: destructive
+server: None
 decision: destructive_approval_required
 risk: destructive
 required_evidence:
@@ -73,7 +74,8 @@ Clone the repo, validate it, then bootstrap a starter context for your own lab:
 ```bash
 git clone https://github.com/aashirjaved/agentic-homelab.git
 cd agentic-homelab
-make validate
+make validate                  # creates .venv and installs dependencies
+source .venv/bin/activate      # required for the python3 commands below
 python3 scripts/bootstrap_homelab_repo.py /path/to/your/homelab-agent-context
 ```
 
@@ -106,6 +108,10 @@ python3 scripts/guardrail_check.py list_nodes
 python3 scripts/guardrail_check.py network-exposure
 python3 scripts/guardrail_check.py destructive
 ```
+
+Exit codes are part of the contract: `0` means allow read-only, `2` means stop
+for approval — so the last two commands exiting `2` is the guardrail working,
+not a crash.
 
 ## What Is Included
 
@@ -221,9 +227,11 @@ Project and release:
 
 ## Current Status
 
-Release candidate quality for a safety-first starter kit. The repo includes
-working read-only reference MCP servers, machine-readable workflows, schemas,
-validation, release audit tooling, guardrails, templates, and client quickstarts.
+v0.1 — the reference servers speak real MCP and are smoke-tested against
+fixtures in CI; they have not yet been exercised against live Proxmox/Docker
+hosts by independent users. The repo includes working read-only reference MCP
+servers, machine-readable workflows, schemas, validation, release audit
+tooling, guardrails, templates, and client quickstarts.
 Repository identity and the skills installer shorthand are declared in
 `catalog/index.yaml` under `repository`.
 

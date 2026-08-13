@@ -11,11 +11,29 @@ from typing import Any
 try:
     import yaml
 except ImportError as exc:  # pragma: no cover
-    raise SystemExit("Missing PyYAML. Install with: python3 -m pip install pyyaml") from exc
+    raise SystemExit(
+        "Missing PyYAML. Run `make validate` once, then `source .venv/bin/activate` "
+        "(system pip installs are often blocked by PEP 668)."
+    ) from exc
 
 
 ROOT = Path(__file__).resolve().parents[1]
 APPROVAL_RISKS = {"write", "destructive", "credential-access"}
+
+# Known-destructive substrings force-classify regardless of the label the agent
+# supplies. Self-labeling is a trust gap; this list narrows it for obvious cases.
+DENY_PATTERNS = (
+    "rm -rf",
+    "mkfs",
+    "dd of=",
+    "wipefs",
+    "zfs destroy",
+    "qm destroy",
+    "pct destroy",
+    "docker system prune",
+    "truncate -s 0",
+    "shred ",
+)
 
 
 def load_yaml(path: Path) -> Any:
@@ -45,6 +63,19 @@ def find_matrix_category(action: str) -> dict[str, Any] | None:
 
 
 def classify(action: str, server: str | None = None) -> dict[str, Any]:
+    lowered = action.lower()
+    if any(pattern in lowered for pattern in DENY_PATTERNS):
+        category = find_matrix_category("destructive") or {}
+        return {
+            "action": action,
+            "server": server,
+            "decision": "destructive_approval_required",
+            "risk": "destructive",
+            "requires_approval": True,
+            "reason": "Action matches a known-destructive pattern; label is ignored.",
+            "required_evidence": category.get("required_evidence", []),
+            "next_step": "Stop for separate destructive-action approval that repeats the exact target and verifier.",
+        }
     tool = find_tool(action, server)
     if not tool:
         category = find_matrix_category(action)
@@ -80,14 +111,20 @@ def classify(action: str, server: str | None = None) -> dict[str, Any]:
 
     risk = tool.get("risk", "unknown")
     requires_approval = bool(tool.get("requires_approval")) or risk in APPROVAL_RISKS
+    required_evidence: list[str] = []
     if risk in {"read", "plan"} and not requires_approval:
         decision = "allow_readonly"
         next_step = "Run only within the declared read/plan behavior and keep output bounded/redacted."
+    elif risk == "destructive":
+        decision = "destructive_approval_required"
+        next_step = "Stop for separate destructive-action approval that repeats the exact target and verifier."
+        category = find_matrix_category("destructive") or {}
+        required_evidence = category.get("required_evidence", [])
     else:
         decision = "approval_required"
         next_step = "Before execution, state target, exact command/tool, expected effect, rollback, and verifier."
 
-    return {
+    result = {
         "action": action,
         "server": tool["server"],
         "decision": decision,
@@ -97,6 +134,9 @@ def classify(action: str, server: str | None = None) -> dict[str, Any]:
         "manifest": tool["manifest"],
         "next_step": next_step,
     }
+    if required_evidence:
+        result["required_evidence"] = required_evidence
+    return result
 
 
 def parse_args() -> argparse.Namespace:

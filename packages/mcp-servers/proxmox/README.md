@@ -42,6 +42,19 @@ export PROXMOX_VERIFY_TLS="true"
 
 For a self-signed lab certificate, either install your CA locally or set `PROXMOX_VERIFY_TLS=false` for testing.
 
+Shell exports only work when you launch the server from that shell. Desktop
+MCP clients (Claude Desktop and similar) start servers with their own
+environment, so bake the credentials into the generated config instead:
+
+```bash
+python3 scripts/generate_mcp_config.py \
+  --servers proxmox \
+  --env PROXMOX_API_URL="https://pve.example.internal:8006" \
+  --env PROXMOX_API_TOKEN_ID="user@realm!token-name" \
+  --env PROXMOX_API_TOKEN_SECRET="<from your secret store>" \
+  --output generated/mcp-config.json
+```
+
 Implemented read-only tools:
 
 - `list_nodes`

@@ -1,3 +1,8 @@
+---
+name: homelab-setup
+description: Turn a user's goals into a safe homelab setup plan with inventory, workflows, and approval gates. Use when setting up or expanding a homelab with agent assistance.
+---
+
 # Homelab Setup
 
 ## Purpose

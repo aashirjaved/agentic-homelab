@@ -1,3 +1,8 @@
+---
+name: agent-self-management
+description: Help local agents manage their own runtime safely without taking over the host. Use when an agent installs, updates, or supervises itself or other local agents.
+---
+
 # Agent Self Management
 
 ## Purpose

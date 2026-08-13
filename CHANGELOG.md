@@ -5,6 +5,10 @@ All notable changes to `agentic-homelab` will be documented here.
 This project uses a pragmatic release log. Keep entries focused on user-visible
 changes, safety changes, and compatibility notes.
 
+## Unreleased
+
+- Nothing yet.
+
 ## 0.1.0 - 2026-08-13
 
 ### Added

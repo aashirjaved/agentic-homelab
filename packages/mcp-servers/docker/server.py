@@ -208,7 +208,13 @@ def handle(message: dict[str, Any]) -> None:
 
     if method == "tools/call":
         params = message.get("params", {})
-        respond(message_id, handle_tool(params.get("name", ""), params.get("arguments", {})))
+        try:
+            respond(message_id, handle_tool(params.get("name", ""), params.get("arguments", {})))
+        except Exception as exc:  # keep the request id so clients can correlate the failure
+            respond(
+                message_id,
+                {"content": [{"type": "text", "text": f"Tool call failed: {exc}"}], "isError": True},
+            )
         return
 
     if method == "notifications/initialized":

@@ -56,7 +56,7 @@ def build_audit(run_validate: bool) -> list[dict[str, str]]:
         items.append(audited_item("Repository validator passes", "manual", "Run `make validate` before release."))
 
     checks = [
-        ("README describes current status honestly", "README.md", ["Current Status", "Release candidate quality", "implemented-capabilities"]),
+        ("README describes current status honestly", "README.md", ["Current Status", "smoke-tested against", "implemented-capabilities"]),
         ("README has release-grade OSS structure", "README.md", ["What This Is", "What This Is Not", "Quick Start", "Supported Domains", "Supported Clients", "License"]),
         ("README includes skills install shorthand", "README.md", [repository.get("skills_install", "npx skills add")]),
         ("Security policy is present", "SECURITY.md", ["Security", "report"]),
