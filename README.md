@@ -4,10 +4,29 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Safety: read-only first](https://img.shields.io/badge/safety-read--only%20first-blue.svg)](docs/safety-model.md)
 
-Skills, MCP servers, guardrails, templates, and workflows that help AI agents set
-up and maintain homelabs safely.
+**Let AI agents run your homelab without giving them root.** Skills, MCP
+servers, guardrails, templates, and workflows that make Proxmox, Docker, NAS,
+and monitoring agent-operable — read-only by default, with explicit approval
+gates for anything risky.
 
 > Practical over hype. Read-only first. Human-approved writes. Mechanical verification.
+
+```console
+$ python3 scripts/guardrail_check.py destructive
+action: destructive
+decision: destructive_approval_required
+risk: destructive
+required_evidence:
+- separate destructive-action approval
+- target identifier repeated by the human
+- verified backup or explicit no-backup acknowledgement
+- recovery plan
+next_step: Stop for separate destructive-action approval that repeats the exact target and verifier.
+```
+
+Every action an agent wants to take is classified before it runs. Reads flow
+freely; writes stop and ask; destructive operations demand a backup and a
+human repeating the exact target.
 
 ## What This Is
 
@@ -234,3 +253,7 @@ and [SECURITY.md](SECURITY.md).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+⭐ If this saves your homelab from an over-eager agent, a star helps others find it.
