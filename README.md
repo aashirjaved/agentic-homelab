@@ -11,6 +11,8 @@ gates for anything risky.
 
 > Practical over hype. Read-only first. Human-approved writes. Mechanical verification.
 
+![Guardrail demo: reads flow, risky actions stop for approval](docs/assets/demo.gif)
+
 ```console
 $ python3 scripts/guardrail_check.py destructive
 action: destructive
