@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,20 +22,32 @@ except ImportError as exc:  # pragma: no cover
 ROOT = Path(__file__).resolve().parents[1]
 APPROVAL_RISKS = {"write", "destructive", "credential-access"}
 
-# Known-destructive substrings force-classify regardless of the label the agent
-# supplies. Self-labeling is a trust gap; this list narrows it for obvious cases.
-DENY_PATTERNS = (
-    "rm -rf",
-    "mkfs",
-    "dd of=",
-    "wipefs",
-    "zfs destroy",
-    "qm destroy",
-    "pct destroy",
-    "docker system prune",
-    "truncate -s 0",
-    "shred ",
+# Known-destructive command shapes force-classify as destructive whatever label
+# the agent supplies. Best-effort pattern list, not a shell parser: it narrows
+# the self-labeling trust gap for obvious cases and will not catch every
+# obfuscation. Matched against a whitespace-normalized lowercase string.
+DENY_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\brm\s+-\S*r\S*f",       # rm -rf, rm -fr, rm -r -f (after normalize)
+        r"\brm\s+-\S*f\S*r",
+        r"\brm\s+-r\b.*\s-f\b",
+        r"\bmkfs",
+        r"\bdd\s+\S*.*\bof=/dev/",
+        r"\bwipefs",
+        r"\bzfs\s+destroy",
+        r"\bqm\s+destroy",
+        r"\bpct\s+destroy",
+        r"\bdocker\s+system\s+prune",
+        r"\btruncate\s+(-s|--size)\s+0\b",
+        r"\bshred\b",
+    )
 )
+
+
+def matches_deny_pattern(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.lower())
+    return any(pattern.search(normalized) for pattern in DENY_PATTERNS)
 
 
 def load_yaml(path: Path) -> Any:
@@ -72,18 +86,31 @@ def load_policy() -> dict[str, Any]:
 
 
 def apply_policy(result: dict[str, Any]) -> dict[str, Any]:
-    """Escalate decisions according to the active policy; never relax them."""
+    """Escalation-only overlay: the policy can tighten a decision, never relax one.
+
+    With the shipped defaults the classifier is already at least as strict as
+    the policy, so this layer is defense in depth: it catches future classifier
+    relaxation, custom manifests that mislabel risk, and policy typos (an
+    unrecognized mode fails closed to read-only).
+    """
     policy = load_policy()
     if not policy:
         return result
     defaults = policy.get("defaults", {})
     mode = defaults.get("mode", "read-only")
+    if mode != "read-only":
+        # Unknown modes must not silently disable escalation.
+        result["policy_warning"] = (
+            f"Unrecognized policy mode {mode!r}; treating as read-only (fail closed)."
+        )
+        mode = "read-only"
     require_approval = set(defaults.get("require_approval_for", []))
     risk = result.get("risk")
     if result.get("decision") == "allow_readonly" and (
-        risk in require_approval or (mode == "read-only" and risk not in {"read", "plan"})
+        risk in require_approval or risk not in {"read", "plan"}
     ):
         result["decision"] = "approval_required"
+        result["requires_approval"] = True
         result["next_step"] = (
             "Policy requires approval for this risk. State target, exact command/tool, "
             "expected effect, rollback, and verifier."
@@ -93,8 +120,7 @@ def apply_policy(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def classify(action: str, server: str | None = None) -> dict[str, Any]:
-    lowered = action.lower()
-    if any(pattern in lowered for pattern in DENY_PATTERNS):
+    if matches_deny_pattern(action):
         category = find_matrix_category("destructive") or {}
         return {
             "action": action,
@@ -169,16 +195,66 @@ def classify(action: str, server: str | None = None) -> dict[str, Any]:
     return result
 
 
+def hook_main() -> int:
+    """PreToolUse hook mode: read the hook JSON from stdin, emit a permission decision.
+
+    Always exits 0 with a JSON decision on stdout; any internal error emits a
+    deny (fail closed). Tool names arrive as mcp__<server>__<tool>; string
+    values inside tool_input are also screened against the deny patterns so
+    command-shaped arguments cannot sneak past a harmless tool name.
+    """
+    def emit(decision: str, reason: str) -> int:
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": decision,
+                "permissionDecisionReason": reason,
+            }
+        }))
+        return 0
+
+    try:
+        payload = json.load(sys.stdin)
+        tool_name = str(payload.get("tool_name", ""))
+        if not tool_name:
+            return emit("deny", "Hook payload has no tool_name; failing closed.")
+        parts = tool_name.split("__")
+        action = parts[-1]
+        server = None
+        if len(parts) == 3 and parts[0] == "mcp":
+            server = parts[1].removeprefix("agentic-homelab-")
+        arg_text = " ".join(
+            str(v) for v in (payload.get("tool_input") or {}).values() if isinstance(v, (str, int, float))
+        )
+        if arg_text and matches_deny_pattern(arg_text):
+            return emit("deny", f"Tool arguments match a known-destructive pattern: {arg_text[:200]}")
+        result = apply_policy(classify(action, server))
+        decision = result["decision"]
+        if decision == "allow_readonly":
+            return emit("allow", f"{action}: read-only per {result.get('manifest', 'risk matrix')}.")
+        if decision == "approval_required":
+            return emit("ask", f"{action}: {result['next_step']}")
+        return emit("deny", f"{action}: {decision}. {result['next_step']}")
+    except Exception as exc:  # fail closed, never fail open
+        return emit("deny", f"guardrail hook error ({exc}); failing closed.")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", help="MCP tool or matrix category, for example list_nodes, delete_guest, network-exposure")
+    parser.add_argument("action", nargs="?", help="MCP tool or matrix category, for example list_nodes, delete_guest, network-exposure")
     parser.add_argument("--server", help="Optional MCP server id to disambiguate")
     parser.add_argument("--format", choices=["json", "text"], default="text")
-    return parser.parse_args()
+    parser.add_argument("--hook", action="store_true", help="PreToolUse hook mode: read hook JSON from stdin, print a permission decision, always exit 0")
+    args = parser.parse_args()
+    if not args.hook and not args.action:
+        parser.error("action is required unless --hook is used")
+    return args
 
 
 def main() -> int:
     args = parse_args()
+    if args.hook:
+        return hook_main()
     result = apply_policy(classify(args.action, args.server))
     if args.format == "json":
         print(json.dumps(result, indent=2, sort_keys=True))

@@ -25,6 +25,7 @@ required_evidence:
 - verified backup or explicit no-backup acknowledgement
 - recovery plan
 next_step: Stop for separate destructive-action approval that repeats the exact target and verifier.
+policy: default-homelab-policy (mode: read-only)
 ```
 
 Every action an agent wants to take is classified before it runs. Reads flow
@@ -251,6 +252,15 @@ Linux.
 
 See [docs/implemented-capabilities.md](docs/implemented-capabilities.md) for the
 exact implementation boundary.
+
+## Where This Is Going
+
+The north star: install it, and your agent earns its way from observer to
+operator — **map** your lab automatically, **monitor** it 24/7 with read-only
+patrols (disk health, backup freshness, update lag, CVE exposure, cert
+expiry), **propose** fixes as one-tap approval requests, and only then earn
+**narrow, pre-declared autonomy** with rollback attached. Autonomy is a
+ladder, not a switch. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Contributing
 

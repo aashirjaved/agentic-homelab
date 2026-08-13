@@ -116,9 +116,15 @@ def live_checks() -> None:
     """Optional checks against real infrastructure; skip cleanly when absent."""
     import shutil
 
-    if shutil.which("docker") and subprocess.run(
-        ["docker", "info"], capture_output=True, timeout=10, check=False
-    ).returncode == 0:
+    docker_up = False
+    if shutil.which("docker"):
+        try:
+            docker_up = subprocess.run(
+                ["docker", "info"], capture_output=True, timeout=10, check=False
+            ).returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            docker_up = False
+    if docker_up:
         responses = run_server(
             ROOT / "packages" / "mcp-servers" / "docker" / "server.py",
             [{"jsonrpc": "2.0", "id": 7, "method": "tools/call",
@@ -139,7 +145,8 @@ def live_checks() -> None:
         )
         result = responses[0]
         assert result.get("id") == 8, f"live proxmox call lost its request id: {result}"
-        print("live: proxmox list_nodes responded with correlated id")
+        assert not result.get("result", {}).get("isError"), f"live proxmox call errored: {result}"
+        print("live: proxmox list_nodes OK")
     else:
         print("live: PROXMOX_API_URL not set, skipped")
 

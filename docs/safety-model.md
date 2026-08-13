@@ -40,9 +40,10 @@ Be precise about what is mechanically enforced versus what is convention:
 
 - **Enforced by code:** the reference MCP servers implement zero write tools —
   a client cannot invoke what does not exist. Known-destructive command
-  patterns (`rm -rf`, `mkfs`, `zfs destroy`, ...) are force-classified as
-  destructive by `scripts/guardrail_check.py` regardless of how the action is
-  labeled.
+  patterns (`rm -rf` and flag variants, `mkfs`, `zfs destroy`, `dd of=/dev/...`)
+  are force-classified as destructive by `scripts/guardrail_check.py` whatever
+  the action label says. This is a best-effort pattern list, not a shell
+  parser — treat it as narrowing the trust gap, not closing it.
 - **Enforced in CI:** `make validate` checks that every manifest-declared
   write/destructive/credential tool carries `requires_approval`, and exercises
   the guardrail checker.

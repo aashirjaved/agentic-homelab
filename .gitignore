@@ -15,5 +15,5 @@ build/
 __pycache__/
 .terraform/
 terraform.tfstate*
-diagnostics/
+/diagnostics/
 generated/

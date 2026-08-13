@@ -24,10 +24,16 @@ def server_config(server_id: str, inventory: Path | None, extra_env: dict[str, s
     env: dict[str, str] = {}
     if inventory and server_id in {"proxmox", "vm-management"}:
         env["AGENTIC_HOMELAB_INVENTORY"] = str(inventory.resolve())
-    if server_id == "proxmox":
-        # Desktop MCP clients launch servers with their own environment, not the
-        # user's shell, so credentials must be baked into the config env block.
-        env.update({k: v for k, v in extra_env.items() if k.startswith("PROXMOX_")})
+    # Desktop MCP clients launch servers with their own environment, not the
+    # user's shell, so credentials must be baked into the config env block.
+    # PROXMOX_* keys attach to the proxmox server; everything else attaches to
+    # every generated server (nothing passed via --env is silently dropped).
+    for key, value in extra_env.items():
+        if key.startswith("PROXMOX_"):
+            if server_id == "proxmox":
+                env[key] = value
+        else:
+            env[key] = value
     return {
         "command": "python3",
         "args": [str(server_path.resolve())],
@@ -59,8 +65,9 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="KEY=VALUE",
         help="Environment entry for the generated config, repeatable. "
-        "PROXMOX_* keys are attached to the proxmox server (required for live "
-        "API access from desktop MCP clients, which do not inherit your shell env).",
+        "PROXMOX_* keys attach to the proxmox server; other keys attach to every "
+        "generated server. Needed for desktop MCP clients, which do not inherit "
+        "your shell env.",
     )
     return parser.parse_args()
 
@@ -77,6 +84,8 @@ def main() -> int:
             raise SystemExit(f"--env expects KEY=VALUE, got: {item}")
         key, value = item.split("=", 1)
         extra_env[key] = value
+    if any(k.startswith("PROXMOX_") for k in extra_env) and "proxmox" not in servers:
+        raise SystemExit("PROXMOX_* env passed but the proxmox server is not in --servers; refusing to drop it silently")
     config = generate(servers, args.inventory, extra_env)
     text = json.dumps(config, indent=2, sort_keys=True) + "\n"
     if args.output:
