@@ -4,10 +4,25 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Safety: read-only first](https://img.shields.io/badge/safety-read--only%20first-blue.svg)](docs/safety-model.md)
 
-**Give AI agents safe, read-only access to your homelab — with approval gates
-ready for when you add writes.** Skills, MCP servers, guardrails, templates,
-and workflows for Proxmox, Docker, NAS, and monitoring. The reference servers
-observe and plan; they deliberately implement zero write operations.
+## Your homelab, explained.
+
+**Understand what is running, how it depends on everything else, what is at
+risk, and what to do next.** `agentic-homelab` is a read-only intelligence layer
+for Proxmox, Docker, storage, networking, and services. It correlates the parts
+of a messy homelab without changing them.
+
+Ask the questions that normally require checking five different dashboards:
+
+- Why is Jellyfin unavailable?
+- What breaks if I reboot this VM?
+- Which services do not have a proven recovery path?
+- What changed last night?
+- Where are my single points of failure?
+
+> It can see everything. It changes nothing.
+
+The project starts read-only. Its MCP servers, safety policies, and approval
+gates are the machinery behind the product—not the reason you should use it.
 
 > Practical over hype. Read-only first. Human-approved writes. Mechanical verification.
 
@@ -41,10 +56,85 @@ flowchart LR
     B -->|unknown| F[Blocked: classify first]
 ```
 
+## Quick Start: See Your Homelab in Minutes
+
+Clone, install the small Python dependency set, and run the doctor against the
+starter inventory:
+
+```bash
+git clone https://github.com/aashirjaved/agentic-homelab.git
+cd agentic-homelab
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python scripts/homelab_doctor.py
+```
+
+Investigate a specific service with the same command:
+
+```bash
+python scripts/homelab_doctor.py --investigate jellyfin
+```
+
+The investigator traverses Jellyfin's dependencies, correlates current findings
+with the latest timeline changes, ranks root-cause hypotheses, shows downstream
+impact, and gives read-only verification steps. It reports insufficient evidence
+instead of inventing a cause.
+
+The same report answers “can I recover it?” per service. It checks configuration,
+keys and secrets, restore runbooks, tested restores, every stateful storage
+dependency, and backup failure-domain separation. A fresh backup is treated as a
+signal; a successful restore is evidence.
+
+Ask what is safe to update without enabling auto-update:
+
+```bash
+python scripts/homelab_doctor.py --plan-updates
+```
+
+The result gates candidates on current health, recovery readiness, release and
+breaking-change research, rollback, verification, recent stability, and blast
+radius. “Ready for approval” deliberately does not mean “executed.”
+
+The command safely inspects the local host, Docker, storage capacity, DNS and
+Tailscale state, plus Proxmox when a scoped API token is configured. If a source
+is unavailable, the report says so explicitly. Point `--inventory` at your YAML
+or JSON file to enrich discovery with NAS, backup, recovery, update, and
+dependency knowledge. To create a redacted report for Reddit, Discord, GitHub,
+or a forum:
+
+```bash
+python scripts/homelab_doctor.py \
+  --inventory path/to/homelab.inventory.yaml \
+  --share diagnostics/homelab-report.md
+```
+
+Or create a complete redacted support bundle:
+
+```bash
+python scripts/homelab_doctor.py \
+  --inventory path/to/homelab.inventory.yaml \
+  --investigate jellyfin \
+  --bundle diagnostics/jellyfin-incident
+```
+
+Vendor-neutral HTTP health checks can be declared for services and NAS/storage
+systems. The doctor records only status and latency—never endpoint URLs or
+response bodies—and correlates failures with dependencies and recent changes.
+
+The report explains known relationships, ranks obvious risks, calls out what it
+cannot establish, remembers a local baseline for “what changed?”, and states
+that no infrastructure changes were made. Private IPv4 addresses
+and URL hosts are redacted from the share copy; always review it before posting.
+
+See [the doctor guide](docs/homelab-doctor.md) for the inventory relationship
+fields and output contract.
+
 ## What This Is
 
-`agentic-homelab` is an open-source starter kit for making a homelab
-agent-friendly without handing an agent unlimited root access.
+`agentic-homelab` is an open-source homelab intelligence layer. It builds a
+useful model from infrastructure inventory and read-only observations, then
+turns that model into diagnosis, risk analysis, and recovery guidance.
 
 It gives agents structured context, read-only tools, explicit approval gates, and
 verification patterns for common homelab setups:
@@ -77,13 +167,12 @@ strong boundaries.
 
 The goal is simple: make the safe path the easy path.
 
-## Quick Start
+## Agent Integration
 
-Clone the repo, validate it, then bootstrap a starter context for your own lab:
+After trying the doctor, validate the repo and bootstrap a context for an MCP
+client or local agent:
 
 ```bash
-git clone https://github.com/aashirjaved/agentic-homelab.git
-cd agentic-homelab
 make validate                  # creates .venv and installs dependencies
 source .venv/bin/activate      # required for the python3 commands below
 python3 scripts/bootstrap_homelab_repo.py /path/to/your/homelab-agent-context
@@ -191,7 +280,8 @@ make validate                 # schema checks, repo checks, MCP smoke tests
 make guardrail-smoke          # action classification examples
 make workflow-chooser-smoke   # workflow recommendations from sample inventory
 make release-audit            # pass/fail/manual release evidence
-make doctor                   # local readiness checks
+make doctor                   # discover and explain the local homelab
+make readiness                # repository/client prerequisite checks
 ```
 
 Generate an MCP client config with absolute paths:
@@ -202,12 +292,12 @@ python3 scripts/generate_mcp_config.py \
   --output generated/mcp-config.json
 ```
 
-Create a redacted diagnostics bundle:
+Create a redacted intelligence and diagnostics bundle:
 
 ```bash
-python3 scripts/create_diagnostics_bundle.py \
-  --output diagnostics/example \
-  --inventory templates/inventory/homelab.inventory.example.yaml
+python3 scripts/homelab_doctor.py \
+  --inventory templates/inventory/homelab.inventory.example.yaml \
+  --bundle diagnostics/example
 ```
 
 ## Documentation Map
@@ -237,11 +327,16 @@ Project and release:
 
 ## Current Status
 
-v0.1 — the reference servers speak real MCP and are smoke-tested against
-fixtures in CI; they have not yet been exercised against live Proxmox/Docker
-hosts by independent users. The repo includes working read-only reference MCP
-servers, machine-readable workflows, schemas, validation, release audit
-tooling, guardrails, templates, and client quickstarts.
+The product-facing doctor discovers local Docker, storage, and network state;
+optionally reads Proxmox and declared service/NAS endpoints; builds a dependency
+graph and change timeline; ranks incident hypotheses; assesses recovery and
+updates; and creates redacted support bundles. Reference MCP servers remain
+available as read-only integration surfaces.
+
+Live-environment behavior still depends on the permissions and APIs available
+in each user's lab. The integrations are smoke-tested against representative
+fixtures; broader
+independent testing across Proxmox, Docker, NAS, macOS, and Linux remains useful.
 Repository identity and the skills installer shorthand are declared in
 `catalog/index.yaml` under `repository`.
 
@@ -255,12 +350,11 @@ exact implementation boundary.
 
 ## Where This Is Going
 
-The north star: install it, and your agent earns its way from observer to
-operator — **map** your lab automatically, **monitor** it 24/7 with read-only
-patrols (disk health, backup freshness, update lag, CVE exposure, cert
-expiry), **propose** fixes as one-tap approval requests, and only then earn
-**narrow, pre-declared autonomy** with rollback attached. Autonomy is a
-ladder, not a switch. See [docs/roadmap.md](docs/roadmap.md).
+The north star is the best open-source intelligence layer for understanding a
+messy homelab: broader discovery, stronger dependency inference, richer change
+sources, and increasingly useful diagnosis and recovery evidence. Approval-gated
+writes come only after users trust those explanations; autonomy is not the
+product wedge. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Contributing
 
