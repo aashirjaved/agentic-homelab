@@ -3,7 +3,7 @@
   "$id": "https://agentic-homelab.dev/schemas/inventory.schema.json",
   "title": "Agentic Homelab Inventory",
   "type": "object",
-  "required": ["homelab", "nodes"],
+  "required": ["nodes"],
   "properties": {
     "homelab": {
       "type": "object",
@@ -16,8 +16,16 @@
       "additionalProperties": true
     },
     "nodes": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/node" }
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/keyedNode" }
+        }
+      ]
     },
     "services": {
       "type": "array",
@@ -46,6 +54,25 @@
         "address": { "type": "string" },
         "access": { "type": "object", "additionalProperties": true },
         "risks": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "keyedNode": {
+      "type": "object",
+      "properties": {
+        "role": { "type": "string" },
+        "display_name": { "type": "string" },
+        "parent": { "type": "string" },
+        "proxmox_ctid": { "type": ["integer", "string"] },
+        "proxmox_node_name": { "type": "string" },
+        "lan_ip": { "type": "string" },
+        "tailscale_ip": { "type": "string" },
+        "ssh": { "type": "string" },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "services": { "type": "object", "additionalProperties": true },
+        "mounts": { "type": "object", "additionalProperties": { "type": "string" } },
+        "stacks": { "type": "object", "additionalProperties": true },
+        "storage_pool": { "type": "string" }
       },
       "additionalProperties": true
     },
@@ -98,8 +125,8 @@
         "mounted_by": { "type": "array", "items": { "type": "string" } },
         "independent_backup": { "type": "boolean" },
         "failure_domain": { "type": "string" },
-        "backup_failure_domain": { "type": "string" }
-        ,"healthcheck": { "$ref": "#/$defs/healthcheck" }
+        "backup_failure_domain": { "type": "string" },
+        "healthcheck": { "$ref": "#/$defs/healthcheck" }
       },
       "additionalProperties": true
     },
@@ -125,7 +152,9 @@
             { "type": "array", "items": { "type": "integer", "minimum": 100, "maximum": 599 } }
           ]
         },
-        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 15 }
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 15 },
+        "mode": { "type": "string", "enum": ["health", "reachability"] },
+        "scope": { "type": "string" }
       },
       "additionalProperties": false,
       "anyOf": [

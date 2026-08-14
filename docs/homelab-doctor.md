@@ -1,9 +1,9 @@
 # Homelab Doctor
 
 `homelab doctor` is the shortest path from a machine to a useful answer. It
-uses bounded read-only Docker inspection, optionally merges YAML or JSON
-inventory, builds a dependency graph, identifies obvious risks and missing
-knowledge, and makes no infrastructure changes.
+uses bounded read-only Docker, host-storage, endpoint, and Proxmox inspection;
+optionally merges YAML or JSON inventory; builds a dependency graph; identifies
+obvious risks and missing knowledge; and makes no infrastructure changes.
 
 ```bash
 homelab doctor
@@ -11,10 +11,53 @@ homelab doctor
 
 Local discovery currently covers Docker containers, images, state, health,
 published ports, and mounts; local filesystem capacity; hostname resolution and
-Tailscale connection state; and an optional remote Proxmox API. Every source has
+Tailscale connection state; and an optional Proxmox API. Remote discovery can
+inspect declared hosts over non-interactive SSH. Every source has
 an evidence status. Missing CLIs, unreachable daemons, and parse failures are
 shown as unavailable or partial—not silently interpreted as an empty, healthy
 lab. An optional integration that is not configured is labeled `not-configured`.
+
+### Multi-host SSH discovery
+
+The doctor accepts both canonical list inventories and operator-friendly keyed
+inventories whose node IDs are mapping keys. Keyed entries can declare roles,
+capabilities, parent guests, services, mounts, Compose stacks, storage pools,
+and a simple `ssh` destination. Manual inventory enriches live discovery; it
+does not need to duplicate every observed container or filesystem.
+
+```yaml
+homelab:
+  name: example
+nodes:
+  pve:
+    role: proxmox-storage
+    capabilities: [proxmox, zfs]
+    ssh: root@pve.internal
+    storage_pool: tank
+  apps:
+    role: compute-docker
+    capabilities: [docker]
+    ssh: root@apps.internal
+    mounts:
+      media: /mnt/pve/media
+```
+
+```bash
+homelab doctor \
+  --inventory inventory.yaml \
+  --no-local \
+  --ssh apps=root@apps.internal \
+  --ssh-identity ~/.ssh/homelab_readonly
+```
+
+Declared and repeatable `--ssh NODE=DESTINATION` targets are inspected in
+parallel. The latter overrides the former. `--ssh-host-key-alias NODE=ALIAS`
+supports known-host entries whose alias differs from the connection address.
+SSH uses `BatchMode=yes`, bounded connection and command timeouts, and normal
+host-key verification. It runs only fixed read-only Docker, `df`, `mount`, and
+`pvesh get` commands. Collection is capability-aware: a host without Docker or
+Proxmox capability is not probed for that runtime. Use `--no-remote` to suppress
+SSH discovery or `--no-discover` to use declared inventory only.
 
 ### Proxmox discovery
 
@@ -72,7 +115,8 @@ still valid evidence, so it does not masquerade as an evidence-source outage.
 
 Use `--inventory path/to/homelab.inventory.yaml` to merge declared knowledge.
 Declared fields take precedence while live-only fields such as container state
-are retained. Use `--no-discover` for a deterministic inventory-only report.
+are retained. Exact declared Compose services and network mounts are reconciled
+with their live observations instead of appearing twice.
 
 ## Incident investigator
 
@@ -81,10 +125,11 @@ homelab investigate jellyfin \
   --inventory path/to/homelab.inventory.yaml
 ```
 
-The investigator walks the inferred and declared graph. Deterministic rules
-combine direct service symptoms, findings on
-dependencies, unavailable evidence sources, and changes from the current
-observation. Each hypothesis includes a confidence label, supporting evidence,
+The investigator walks causal dependency directions in the inferred and
+declared graph. Deterministic rules combine direct service symptoms, findings on
+its dependencies, and relevant changes from the current observation. Global
+collector gaps and unrelated mounts are not promoted as incident causes. Each
+hypothesis includes current state, a confidence label, supporting evidence,
 downstream impact, and read-only verification steps.
 
 **Deterministic evidence first. Agent reasoning second.** The CLI does not call
@@ -186,9 +231,11 @@ The Homelab Graph combines declared fields with inferred relationships:
 | Docker network attachments | container → network segment |
 | container bind paths + host mounts | container → backing storage |
 | NFS/SMB source host | storage → serving host or discovered placeholder |
+| NFS/SMB export path + server filesystems | remote mount → backing filesystem |
 
-This can connect a path such as Jellyfin → Docker host → NFS mount → NAS VM →
-Proxmox node without requiring every edge to be handwritten. Unmatched bind
+This can connect a path such as Jellyfin → Docker host → NFS mount → NAS host →
+backing filesystem, and a NAS VM → Proxmox node, without requiring every edge
+to be handwritten. Unmatched bind
 mounts, Compose dependencies, and storage servers remain explicit unresolved
 relationships rather than disappearing. The doctor also detects public exposure,
 unproven recovery status, and shared dependencies. It also reports questions

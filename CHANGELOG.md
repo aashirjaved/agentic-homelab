@@ -9,6 +9,36 @@ changes, safety changes, and compatibility notes.
 
 - Nothing yet.
 
+## 0.2.1 - 2026-08-14
+
+### Added
+
+- Parallel, capability-aware SSH discovery for multi-host Docker, Proxmox, and
+  filesystem evidence, including explicit identity and known-host alias options.
+- Operator-friendly keyed inventory normalization and `--no-local` controller
+  exclusion for remote-only scans.
+- Exact reconciliation of declared Compose services and network mounts with live
+  observations, including remote-export-to-backing-filesystem graph edges.
+
+### Fixed
+
+- Real `pvesh` compatibility, per-node Proxmox storage identity, Linux NFS mount
+  parsing, Tailscale CGNAT exposure classification, and TLS reachability signals.
+- Investigation traversal no longer expands through unrelated host mounts or
+  treats global evidence gaps as a component root cause.
+- Undeclared exited containers are reported as stale artifacts instead of active
+  service outages; stopped containers no longer duplicate unhealthy findings.
+- Proxmox and discovered runtime storage no longer create unsupported recovery
+  claims, and planning prose is no longer converted into a storage-pool ID.
+
+### Verified
+
+- Dogfooded read-only against a multi-host Proxmox, Docker, NFS, and Tailscale
+  homelab: 70 services, 105 storage systems, 17 Compose stacks, 15 networks, and
+  394 inferred relationships with zero unresolved graph edges.
+- Exercised Doctor, healthy-service investigation, and redacted share-bundle
+  flows end to end without infrastructure writes.
+
 ## 0.2.0 - 2026-08-14
 
 ### Added
