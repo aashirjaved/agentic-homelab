@@ -1,6 +1,6 @@
 name: agentic-homelab
-description: Agent skills, MCP servers, guardrails, and workflows for safe homelab automation.
-version: 0.1.0
+description: Read-only infrastructure intelligence for understanding and diagnosing a homelab.
+version: 0.2.0
 repository:
   org: aashirjaved
   name: agentic-homelab

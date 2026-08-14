@@ -1,12 +1,12 @@
 # Homelab Doctor
 
-`homelab_doctor.py` is the shortest path from a machine to a useful answer. It
+`homelab doctor` is the shortest path from a machine to a useful answer. It
 uses bounded read-only Docker inspection, optionally merges YAML or JSON
 inventory, builds a dependency graph, identifies obvious risks and missing
 knowledge, and makes no infrastructure changes.
 
 ```bash
-python scripts/homelab_doctor.py
+homelab doctor
 ```
 
 Local discovery currently covers Docker containers, images, state, health,
@@ -25,7 +25,7 @@ Use a scoped, read-only API token as documented in
 export PROXMOX_API_URL=https://pve.example:8006
 export PROXMOX_API_TOKEN_ID='doctor@pve!readonly'
 export PROXMOX_API_TOKEN_SECRET='...'
-python scripts/homelab_doctor.py
+homelab doctor
 ```
 
 The doctor performs GET requests for nodes, guests, node storage, and the latest
@@ -34,10 +34,11 @@ linked to each reporting node; tasks join the unified timeline. Tokens are never
 placed in reports or history. TLS verification defaults on and request timeouts
 are capped at 30 seconds.
 
-Local filesystem mount paths are deliberately replaced with opaque identifiers
-in reports, while capacity remains available for risk detection. A filesystem at
+Local filesystem identities are stable opaque hashes; mount targets are retained
+long enough to connect container bind mounts to their backing filesystem. Share
+bundles redact home-directory usernames and private addresses. A filesystem at
 90% or more is flagged as critical. Network discovery records only summarized
-resolution and tailnet state, not addresses or peer lists.
+resolution and tailnet state, not peer lists.
 
 ### Service and NAS health probes
 
@@ -76,16 +77,18 @@ are retained. Use `--no-discover` for a deterministic inventory-only report.
 ## Incident investigator
 
 ```bash
-python scripts/homelab_doctor.py \
-  --inventory path/to/homelab.inventory.yaml \
-  --investigate jellyfin
+homelab investigate jellyfin \
+  --inventory path/to/homelab.inventory.yaml
 ```
 
-The investigator walks outward through `runs_on`, `uses_storage`, and
-`depends_on` relationships. It combines direct service symptoms, findings on
+The investigator walks the inferred and declared graph. Deterministic rules
+combine direct service symptoms, findings on
 dependencies, unavailable evidence sources, and changes from the current
 observation. Each hypothesis includes a confidence label, supporting evidence,
 downstream impact, and read-only verification steps.
+
+**Deterministic evidence first. Agent reasoning second.** The CLI does not call
+an LLM; its scores and conclusions come from inspectable heuristics.
 
 Confidence is deliberately bounded. A stopped or unhealthy observed dependency
 can be “likely”; backup uncertainty and broad network listening are weak signals,
@@ -94,7 +97,7 @@ not declared causes. When no relevant evidence exists, the result says
 
 ## Recovery readiness
 
-The doctor scores recovery per service across six evidence checks:
+The doctor scores supplied recovery metadata per service across six evidence checks:
 
 1. configuration needed to recreate the service;
 2. secrets, encryption keys, and recovery codes;
@@ -137,14 +140,15 @@ perform a restore. Restore drills remain separately approved operations.
 ## Update intelligence
 
 ```bash
-python scripts/homelab_doctor.py --plan-updates
-python scripts/homelab_doctor.py --plan-updates jellyfin
+homelab updates
+homelab updates jellyfin
 ```
 
 Update intelligence evaluates a candidate without pulling an image or restarting
-a service. Its gates cover current health, recovery readiness, authoritative
+a service. Its gates cover current health and supplied metadata for recovery,
 release-note review, breaking-change review, rollback, independent verification,
-recent stability, and graph-derived blast radius.
+recent stability, and graph-derived blast radius. It does not fetch release
+notes, registries, or vulnerability feeds.
 
 Decisions mean:
 
@@ -170,7 +174,7 @@ The ordered output is a research and approval plan. No update command is run.
 
 ## Relationship fields
 
-The existing inventory fields form the first version of the Homelab Graph:
+The Homelab Graph combines declared fields with inferred relationships:
 
 | Field | Relationship |
 | --- | --- |
@@ -178,8 +182,15 @@ The existing inventory fields form the first version of the Homelab Graph:
 | `services[].uses_storage[]` | service → storage |
 | `services[].depends_on[]` | service → service or other component |
 | `storage[].mounted_by[]` | node → storage |
+| Docker Compose labels | container → stack and container → dependency |
+| Docker network attachments | container → network segment |
+| container bind paths + host mounts | container → backing storage |
+| NFS/SMB source host | storage → serving host or discovered placeholder |
 
-The doctor currently detects missing relationship targets, public exposure,
+This can connect a path such as Jellyfin → Docker host → NFS mount → NAS VM →
+Proxmox node without requiring every edge to be handwritten. Unmatched bind
+mounts, Compose dependencies, and storage servers remain explicit unresolved
+relationships rather than disappearing. The doctor also detects public exposure,
 unproven recovery status, and shared dependencies. It also reports questions
 that cannot be answered from the supplied evidence, including missing change
 history and restore-test evidence. This distinction is deliberate: unknown is
@@ -190,7 +201,7 @@ not healthy.
 Use `--format json` for agents, scripts, or future ingestion:
 
 ```bash
-python scripts/homelab_doctor.py \
+homelab doctor \
   --inventory path/to/homelab.inventory.yaml \
   --format json
 ```

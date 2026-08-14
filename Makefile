@@ -11,7 +11,7 @@ test:
 	. .venv/bin/activate && python -m unittest discover -s tests -v
 
 doctor:
-	. .venv/bin/activate && python scripts/homelab_doctor.py
+	. .venv/bin/activate && python -m agentic_homelab.cli doctor
 
 readiness:
 	python3 scripts/doctor.py --inventory templates/inventory/homelab.inventory.example.json

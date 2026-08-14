@@ -9,6 +9,27 @@ changes, safety changes, and compatibility notes.
 
 - Nothing yet.
 
+## 0.2.0 - 2026-08-14
+
+### Added
+
+- Inferred Docker Compose stacks, Compose dependencies, Docker networks, named
+  volumes, container bind-mount backing storage, and NFS/SMB serving hosts.
+- Explicit unresolved topology relationships when a bind mount, Compose
+  dependency, or storage server cannot be connected safely.
+- Installable `agentic-homelab` Python package and `homelab` command with
+  `doctor`, `investigate`, `changes`, `recovery`, `updates`, and `share` entrypoints.
+- Proxmox guest-disk inference connecting VM and LXC configuration to Proxmox
+  storage backends.
+- Reproducible incident-investigation demo generated from the real CLI.
+
+### Changed
+
+- Product language now distinguishes observed evidence from declared recovery
+  and update metadata, and documents the deterministic investigator boundary.
+- The README hero now demonstrates incident investigation instead of guardrails.
+- Each CLI subcommand now has a focused human and JSON output contract.
+
 ## 0.1.1 - 2026-08-13
 
 ### Fixed
