@@ -1,3 +1,4 @@
+import argparse
 import io
 import json
 from pathlib import Path
@@ -76,6 +77,20 @@ class CliTests(unittest.TestCase):
             self.assertEqual({path.name for path in output.iterdir()},
                              {"report.md", "report.json", "manifest.json", "README.md"})
             self.assertIn("Diagnostic bundle written", stdout.getvalue())
+
+    def test_remote_ssh_options_are_structured_and_forwarded(self):
+        _, _, build = self.run_cli([
+            "doctor", "--no-local", "--ssh", "apps=root@apps.internal", "--ssh-identity", "/tmp/key",
+            "--ssh-host-key-alias", "apps=apps.tailnet",
+        ])
+        self.assertFalse(build.call_args.kwargs["discover_local_host"])
+        self.assertEqual(build.call_args.kwargs["ssh_targets"], {"apps": "root@apps.internal"})
+        self.assertEqual(build.call_args.kwargs["ssh_identity"], Path("/tmp/key"))
+        self.assertEqual(build.call_args.kwargs["ssh_host_key_aliases"], {"apps": "apps.tailnet"})
+
+    def test_ssh_assignment_rejects_option_injection(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            cli.assignment("apps=-oProxyCommand=bad")
 
 
 if __name__ == "__main__":

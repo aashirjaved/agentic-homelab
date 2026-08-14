@@ -51,7 +51,7 @@ flowchart LR
 Install the tagged release with `pipx`, then run the doctor:
 
 ```bash
-pipx install "git+https://github.com/aashirjaved/agentic-homelab.git@v0.2.0"
+pipx install "git+https://github.com/aashirjaved/agentic-homelab.git@v0.2.1"
 homelab doctor
 ```
 
@@ -87,7 +87,24 @@ The command safely inspects the local host, Docker, storage capacity, DNS and
 Tailscale state, plus Proxmox when a scoped API token is configured. If a source
 is unavailable, the report says so explicitly. Point `--inventory` at your YAML
 or JSON file to enrich discovery with NAS, backup, recovery, update, and
-dependency knowledge. To create a redacted report for Reddit, Discord, GitHub,
+dependency knowledge. For a multi-host lab, the doctor can use non-interactive
+SSH to inspect declared Docker, Proxmox, and storage hosts in parallel:
+
+```bash
+homelab doctor \
+  --inventory path/to/inventory.yaml \
+  --no-local \
+  --ssh apps=root@apps.internal \
+  --ssh media=root@media.internal \
+  --ssh-identity ~/.ssh/homelab_readonly
+```
+
+Inventory entries with a simple `ssh:` destination are discovered automatically;
+repeatable `--ssh NODE=DESTINATION` values override or add targets. SSH runs in
+batch mode with normal known-host verification. `--no-local` excludes the
+controller machine while keeping remote discovery and endpoint probes enabled.
+
+To create a redacted report for Reddit, Discord, GitHub,
 or a forum:
 
 ```bash

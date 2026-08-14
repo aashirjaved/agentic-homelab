@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -22,9 +23,29 @@ from .doctor import (
 )
 
 
+def assignment(value: str) -> tuple[str, str]:
+    name, separator, target = value.partition("=")
+    invalid = (
+        not separator or not name or not target
+        or any(character.isspace() for character in value)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+", name)
+        or target.startswith("-")
+    )
+    if invalid:
+        raise argparse.ArgumentTypeError("expected a safe NODE=VALUE assignment")
+    return name, target
+
+
 def add_evidence_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--inventory", type=Path, help="YAML or JSON inventory that enriches discovery")
     parser.add_argument("--no-discover", action="store_true", help="Use declared inventory only")
+    parser.add_argument("--no-local", action="store_true", help="Do not inspect the machine running this command")
+    parser.add_argument("--no-remote", action="store_true", help="Do not inspect declared or explicit SSH targets")
+    parser.add_argument("--ssh", action="append", type=assignment, default=[], metavar="NODE=DESTINATION",
+                        help="Inspect a host over non-interactive SSH; may be repeated")
+    parser.add_argument("--ssh-identity", type=Path, help="Identity file used for SSH discovery")
+    parser.add_argument("--ssh-host-key-alias", action="append", type=assignment, default=[], metavar="NODE=ALIAS",
+                        help="Known-host alias for an SSH target; may be repeated")
     parser.add_argument("--history", type=Path, default=DEFAULT_HISTORY, help="Observation history path")
     parser.add_argument("--no-history", action="store_true", help="Do not read or write observation history")
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
@@ -64,6 +85,11 @@ def report_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "inventory_path": args.inventory,
         "discover": not args.no_discover,
+        "discover_local_host": not args.no_local,
+        "discover_remote": not args.no_remote,
+        "ssh_targets": dict(args.ssh),
+        "ssh_identity": args.ssh_identity,
+        "ssh_host_key_aliases": dict(args.ssh_host_key_alias),
         "history_path": args.history,
         "use_history": not args.no_history,
     }
@@ -93,6 +119,7 @@ def render_view(report: dict[str, Any], command: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     kwargs = report_kwargs(args)
+    kwargs["include_recovery_findings"] = args.command == "recovery"
     if args.command == "investigate":
         kwargs["investigate_target"] = args.component
     elif args.command == "updates":

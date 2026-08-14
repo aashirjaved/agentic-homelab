@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import difflib
 import hashlib
+import ipaddress
 import json
 import os
 import platform
 from pathlib import Path
 import re
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -21,6 +24,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlsplit
+from urllib.parse import parse_qsl
 
 import yaml
 
@@ -58,7 +62,7 @@ SNAPSHOT_FIELDS = {
     "nodes": ("role", "hostname", "platform"),
     "services": ("kind", "runs_on", "image", "state", "health", "exposure", "ports", "uses_storage", "depends_on",
                  "member_of", "network_segments"),
-    "storage": ("kind", "backup_status", "mounted_by", "served_by"),
+    "storage": ("kind", "backup_status", "mounted_by", "served_by", "backed_by"),
 }
 
 
@@ -79,15 +83,20 @@ def safe_name(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]+", "-", value).strip("-") or "unknown"
 
 
+def service_match_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
+
+
 def parse_compose_dependencies(value: Any) -> list[str]:
     if not isinstance(value, str):
         return []
     return sorted({part.split(":", 1)[0].strip() for part in value.split(",") if part.strip()})
 
 
-def docker_discovery(runner=run_readonly) -> tuple[dict[str, Any], dict[str, Any]]:
-    docker = shutil.which("docker")
-    if not docker:
+def docker_discovery(runner=run_readonly, *, require_local_binary: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
+    local_docker = shutil.which("docker")
+    docker = local_docker if require_local_binary else "docker"
+    if require_local_binary and not local_docker:
         return {}, {"source": "docker", "status": "unavailable", "detail": "docker CLI not found"}
     code, stdout, stderr = runner([docker, "ps", "--all", "--format", "{{json .}}"])
     if code != 0:
@@ -139,7 +148,8 @@ def docker_discovery(runner=run_readonly) -> tuple[dict[str, Any], dict[str, Any
                     continue
                 state = container.get("State", {})
                 service["state"] = state.get("Status", "unknown")
-                service["health"] = state.get("Health", {}).get("Status", "not-configured")
+                service["health"] = (state.get("Health", {}).get("Status", "not-configured")
+                                     if service["state"] == "running" else "not-configured")
                 labels = container.get("Config", {}).get("Labels") or {}
                 project = labels.get("com.docker.compose.project")
                 compose_service = labels.get("com.docker.compose.service")
@@ -217,14 +227,14 @@ def api_rows(getter, path: str) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
-def proxmox_discovery(getter=proxmox_get) -> tuple[dict[str, Any], dict[str, Any]]:
+def proxmox_discovery(getter=proxmox_get, *, require_env: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
     required = ("PROXMOX_API_URL", "PROXMOX_API_TOKEN_ID", "PROXMOX_API_TOKEN_SECRET")
-    if not all(os.environ.get(name) for name in required):
+    if require_env and not all(os.environ.get(name) for name in required):
         return {}, {"source": "proxmox", "status": "not-configured", "detail": "read-only API token environment is not configured"}
     try:
         node_rows = api_rows(getter, "/nodes")
         guest_rows = api_rows(getter, "/cluster/resources?type=vm")
-        task_rows = api_rows(getter, "/cluster/tasks?limit=50")
+        task_rows = api_rows(getter, "/cluster/tasks?limit=50")[:50]
         storage_rows: list[dict[str, Any]] = []
         guest_storage: dict[str, list[str]] = {}
         guest_config_errors = 0
@@ -251,7 +261,7 @@ def proxmox_discovery(getter=proxmox_get) -> tuple[dict[str, Any], dict[str, Any
                     continue
                 storage_name = value.split(",", 1)[0].split(":", 1)[0]
                 if storage_name and not storage_name.startswith("/") and storage_name != "none":
-                    storage_ids.add("pve-storage:" + storage_name)
+                    storage_ids.add(f"pve-storage:{node_id}:{storage_name}")
             guest_storage[str(vmid)] = sorted(storage_ids)
     except (HTTPError, URLError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         return {}, {"source": "proxmox", "status": "unavailable", "detail": str(exc)[:300]}
@@ -267,7 +277,7 @@ def proxmox_discovery(getter=proxmox_get) -> tuple[dict[str, Any], dict[str, Any
             "vmid": row.get("vmid"), "source": "proxmox"})
     storage: dict[str, dict[str, Any]] = {}
     for row in storage_rows:
-        storage_id = "pve-storage:" + str(row.get("storage", "unknown"))
+        storage_id = f"pve-storage:{row.get('node', 'unknown-node')}:{row.get('storage', 'unknown')}"
         item = storage.setdefault(storage_id, {"id": storage_id, "kind": str(row.get("type", "proxmox-storage")),
             "mounted_by": [], "backup_status": "unknown", "source": "proxmox"})
         item["mounted_by"].append(str(row["node"]))
@@ -293,7 +303,9 @@ def host_storage_discovery(runner=run_readonly) -> tuple[dict[str, Any], dict[st
     mounts: dict[str, tuple[str, str]] = {}
     if mount_code == 0:
         for line in mount_stdout.splitlines():
-            match = re.match(r"(.+?) on (.+?) \(([^, )]+)", line)
+            modern = re.match(r"(.+?) on (.+?) type ([^ ]+) \(", line)
+            legacy = re.match(r"(.+?) on (.+?) \(([^, )]+)", line) if not modern else None
+            match = modern or legacy
             if match:
                 mounts[match.group(2)] = (match.group(1), match.group(3).lower())
     stores = []
@@ -319,7 +331,8 @@ def host_storage_discovery(runner=run_readonly) -> tuple[dict[str, Any], dict[st
             storage_id = f"remote-storage:{safe_name(server)}:{stable_id(export)}"
             stores.append({"id": storage_id, "kind": filesystem, "mounted_by": ["local-host"],
                 "mount_target": target, "server_host": server, "capacity_percent": capacity,
-                "backup_status": "unknown", "source": "host-storage"})
+                "export_path": export, "backup_status": "unknown", "recovery_relevant": False,
+                "source": "host-storage"})
         else:
             stores.append({"id": f"local-filesystem:{stable_id(target)}", "kind": "local-filesystem",
                 "mounted_by": ["local-host"], "mount_target": target, "capacity_percent": capacity,
@@ -366,46 +379,59 @@ def resolve_probe_url(config: dict[str, Any]) -> str | None:
 
 def endpoint_discovery(inventory: dict[str, Any], probe=http_probe) -> tuple[dict[str, Any], dict[str, Any]]:
     observed: dict[str, list[dict[str, Any]]] = {"services": [], "storage": []}
-    attempted = healthy = failed = skipped = 0
+    attempted = healthy = failed = invalid = scoped = 0
     for group in ("services", "storage"):
         for component in inventory.get(group, []):
             config = component.get("healthcheck")
             if not isinstance(config, dict):
                 continue
+            if config.get("scope") not in {None, "control", "local", "local-host"}:
+                scoped += 1
+                continue
             url = resolve_probe_url(config)
             if not url:
-                skipped += 1
+                invalid += 1
                 continue
             parsed = urlsplit(url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
-                skipped += 1
+                invalid += 1
                 continue
             attempted += 1
+            mode = config.get("mode", "health")
             expected = config.get("expected_status", 200)
             expected_codes = {expected} if isinstance(expected, int) else set(expected) if isinstance(expected, list) else {200}
             started = time.monotonic()
             try:
                 status_code = probe(url, int(config.get("timeout_seconds", 5)))
-                ok = status_code in expected_codes
+                ok = status_code < 500 if mode == "reachability" else status_code in expected_codes
                 error = None
             except HTTPError as exc:
-                status_code, ok, error = exc.code, exc.code in expected_codes, None
-            except (URLError, OSError, TimeoutError, ValueError) as exc:
+                status_code = exc.code
+                ok = exc.code < 500 if mode == "reachability" else exc.code in expected_codes
+                error = None
+            except URLError as exc:
+                tls_error = isinstance(exc.reason, ssl.SSLCertVerificationError)
+                status_code = None
+                ok = mode == "reachability" and tls_error
+                error = "TLSVerificationError" if tls_error else type(exc.reason).__name__
+            except (OSError, TimeoutError, ValueError) as exc:
                 status_code, ok, error = None, False, type(exc).__name__
             latency_ms = round((time.monotonic() - started) * 1000)
-            item = {"id": item_id(component), "probe_status": "healthy" if ok else "unhealthy",
+            probe_status = "reachable-with-tls-error" if ok and error == "TLSVerificationError" else "healthy" if ok else "unhealthy"
+            item = {"id": item_id(component), "probe_status": probe_status,
                     "probe_http_status": status_code, "probe_latency_ms": latency_ms, "source": "endpoint-probe"}
             if error:
                 item["probe_error"] = error
             if group == "services":
-                item["health"] = "healthy" if ok else "unhealthy"
+                item["health"] = "reachable" if ok and mode == "reachability" else "healthy" if ok else "unhealthy"
             else:
                 item["state"] = "active" if ok else "inactive"
             observed[group].append(item)
             healthy += int(ok)
             failed += int(not ok)
-    status = "not-configured" if attempted == 0 and skipped == 0 else "partial" if skipped else "ok"
-    detail = f"probed {attempted} endpoints: {healthy} healthy, {failed} unhealthy; {skipped} invalid or unresolved"
+    status = "not-configured" if attempted == 0 and invalid == 0 and scoped == 0 else "partial" if invalid or scoped else "ok"
+    detail = (f"probed {attempted} endpoints: {healthy} succeeded, {failed} failed; "
+              f"{scoped} require host-scoped probing, {invalid} invalid")
     return observed, {"source": "endpoint-probes", "status": status, "detail": detail}
 
 
@@ -437,30 +463,125 @@ def component_aliases(inventory: dict[str, Any]) -> dict[str, str]:
     for group in ("nodes", "services"):
         for component in inventory.get(group, []):
             component_id = item_id(component)
-            for value in (component_id, component.get("hostname"), component.get("name"), component.get("address")):
+            for value in (component_id, component.get("hostname"), component.get("name"), component.get("display_name"),
+                          component.get("address"), component.get("tailscale_address")):
                 if value:
                     aliases[str(value).casefold().rstrip(".")] = component_id
                     aliases[str(value).split(".", 1)[0].casefold()] = component_id
     return aliases
 
 
+def reconcile_declared_docker_services(services: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse a declared service and its uniquely matching Compose observation."""
+    observed_by_identity: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for service in services:
+        if service.get("source") != "docker" or service.get("kind") != "docker-container":
+            continue
+        compose_service = service.get("compose_service")
+        if compose_service and service.get("runs_on"):
+            identity = (str(service["runs_on"]), service_match_key(compose_service))
+            observed_by_identity.setdefault(identity, []).append(service)
+
+    remap: dict[str, str] = {}
+    canonical_items: dict[str, dict[str, Any]] = {}
+    live_fields = {
+        "bind_sources", "compose_service", "depends_on", "health", "image", "member_of",
+        "network_segments", "observed_status", "ports", "state", "uses_storage",
+    }
+    for declared in services:
+        if declared.get("source") != "declared-keyed-inventory" or declared.get("kind") != "declared-service":
+            continue
+        identity = (str(declared.get("runs_on", "")), service_match_key(declared.get("name") or item_id(declared)))
+        matches = observed_by_identity.get(identity, [])
+        if len(matches) != 1:
+            continue
+        observed = matches[0]
+        observed_id = item_id(observed)
+        canonical_id = item_id(declared)
+        merged = dict(declared)
+        merged.update({field: observed[field] for field in live_fields if field in observed})
+        if "exposure" not in merged and "exposure" in observed:
+            merged["exposure"] = observed["exposure"]
+        merged["kind"] = "docker-container"
+        merged["source"] = "declared+docker"
+        remap[observed_id] = canonical_id
+        canonical_items[canonical_id] = merged
+
+    reconciled: list[dict[str, Any]] = []
+    for service in services:
+        service_id = item_id(service)
+        if service_id in remap:
+            continue
+        item = dict(canonical_items.get(service_id, service))
+        item["depends_on"] = sorted({remap.get(value, value) for value in item.get("depends_on", [])})
+        reconciled.append(item)
+    return reconciled
+
+
+def reconcile_declared_storage(
+    storage: list[dict[str, Any]], services: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Merge an exact declared mount with its live remote-filesystem observation."""
+    observed_by_identity: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for item in storage:
+        if "remote-storage:" not in item_id(item) or not item.get("mount_target"):
+            continue
+        for host in item.get("mounted_by", []):
+            observed_by_identity.setdefault((str(host), str(item["mount_target"])), []).append(item)
+
+    remap: dict[str, str] = {}
+    canonical_items: dict[str, dict[str, Any]] = {}
+    live_fields = {"capacity_percent", "export_path", "kind", "server_host", "state"}
+    for declared in storage:
+        mounted_by = declared.get("mounted_by", [])
+        if declared.get("source") != "declared-keyed-inventory" or len(mounted_by) != 1:
+            continue
+        identity = (str(mounted_by[0]), str(declared.get("mount_target", "")))
+        matches = observed_by_identity.get(identity, [])
+        if len(matches) != 1:
+            continue
+        observed = matches[0]
+        observed_id = item_id(observed)
+        canonical_id = item_id(declared)
+        merged = dict(declared)
+        merged.update({field: observed[field] for field in live_fields if field in observed})
+        merged["source"] = "declared+host-storage"
+        remap[observed_id] = canonical_id
+        canonical_items[canonical_id] = merged
+
+    reconciled_storage = [
+        dict(canonical_items.get(item_id(item), item))
+        for item in storage if item_id(item) not in remap
+    ]
+    reconciled_services = []
+    for service in services:
+        item = dict(service)
+        item["uses_storage"] = sorted({remap.get(value, value) for value in item.get("uses_storage", [])})
+        reconciled_services.append(item)
+    return reconciled_storage, reconciled_services
+
+
 def infer_topology(inventory: dict[str, Any]) -> dict[str, Any]:
     inferred = dict(inventory)
     storage = [dict(item) for item in inventory.get("storage", [])]
-    services = [dict(item) for item in inventory.get("services", [])]
+    services = reconcile_declared_docker_services([dict(item) for item in inventory.get("services", [])])
+    storage, services = reconcile_declared_storage(storage, services)
     nodes = [dict(item) for item in inventory.get("nodes", [])]
     unresolved: list[dict[str, str]] = []
     aliases = component_aliases(inventory)
 
     mount_candidates = sorted(
-        [(str(item.get("mount_target")), item_id(item)) for item in storage if item.get("mount_target")],
+        [(str(item.get("mount_target")), item_id(item), set(item.get("mounted_by", [])))
+         for item in storage if item.get("mount_target")],
         key=lambda pair: len(pair[0]), reverse=True,
     )
     for service in services:
         uses = set(service.get("uses_storage", []))
+        service_host = service.get("runs_on")
         for source in service.get("bind_sources", []):
-            target = next((storage_id for mount_target, storage_id in mount_candidates
-                           if source == mount_target or source.startswith(mount_target.rstrip("/") + "/")), None)
+            target = next((storage_id for mount_target, storage_id, mounted_by in mount_candidates
+                           if (not mounted_by or service_host in mounted_by)
+                           and (source == mount_target or source.startswith(mount_target.rstrip("/") + "/"))), None)
             if target:
                 uses.add(target)
             else:
@@ -484,6 +605,42 @@ def infer_topology(inventory: dict[str, Any]) -> dict[str, Any]:
             unresolved.append({"source": item_id(item), "relation": "served_by",
                 "clue": f"server {safe_name(str(server))} was not matched to a managed guest"})
         item["served_by"] = target
+
+    storage_id_remap: dict[str, str] = {}
+    for item in storage:
+        old_id = item_id(item)
+        if "remote-storage:" in old_id and item.get("served_by") and not str(item["served_by"]).startswith("discovered-host:"):
+            item["id"] = f"remote-storage:{safe_name(str(item['served_by']))}:{old_id.rsplit(':', 1)[-1]}"
+            storage_id_remap[old_id] = item["id"]
+    for service in services:
+        service["uses_storage"] = sorted({storage_id_remap.get(value, value) for value in service.get("uses_storage", [])})
+
+    merged_storage: dict[str, dict[str, Any]] = {}
+    for item in storage:
+        storage_id = item_id(item)
+        if storage_id not in merged_storage:
+            merged_storage[storage_id] = item
+            continue
+        existing = merged_storage[storage_id]
+        existing["mounted_by"] = sorted(set(existing.get("mounted_by", [])) | set(item.get("mounted_by", [])))
+        existing["capacity_percent"] = max(existing.get("capacity_percent", 0), item.get("capacity_percent", 0))
+        targets = set(existing.get("mount_targets", [existing.get("mount_target")]))
+        targets.update(item.get("mount_targets", [item.get("mount_target")]))
+        existing["mount_targets"] = sorted(target for target in targets if target)
+    storage = list(merged_storage.values())
+
+    local_filesystems = [item for item in storage if item.get("kind") == "local-filesystem"]
+    for item in storage:
+        export_path = item.get("export_path")
+        serving_host = item.get("served_by")
+        if not export_path or not serving_host:
+            continue
+        candidates = [local for local in local_filesystems
+                      if serving_host in local.get("mounted_by", [])
+                      and (export_path == local.get("mount_target")
+                           or export_path.startswith(str(local.get("mount_target", "")).rstrip("/") + "/"))]
+        if candidates:
+            item["backed_by"] = item_id(max(candidates, key=lambda local: len(str(local.get("mount_target", "")))))
 
     inferred["nodes"] = sorted(nodes, key=item_id)
     inferred["services"] = sorted(services, key=item_id)
@@ -516,12 +673,294 @@ def discover_local(runner=run_readonly) -> tuple[dict[str, Any], list[dict[str, 
     return discovered, evidence
 
 
+def ssh_runner(target: str, identity: Path | None = None, host_key_alias: str | None = None):
+    base = [
+        "ssh", "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6",
+        "-o", "ConnectionAttempts=1", "-o", "ServerAliveInterval=3", "-o", "ServerAliveCountMax=1",
+    ]
+    if identity:
+        base.extend(["-i", str(identity)])
+    if host_key_alias:
+        base.extend(["-o", f"HostKeyAlias={host_key_alias}"])
+
+    def runner(command: list[str], timeout: int = 10) -> tuple[int, str, str]:
+        return run_readonly([*base, target, shlex.join(command)], timeout=min(timeout + 8, 30))
+
+    return runner
+
+
+def namespace_remote_inventory(inventory: dict[str, Any], host_id: str) -> dict[str, Any]:
+    service_ids = {item_id(item): f"{host_id}/{item_id(item)}" for item in inventory.get("services", [])}
+    stack_ids = {item_id(item): f"{host_id}/{item_id(item)}" for item in inventory.get("stacks", [])}
+    network_ids = {item_id(item): f"{host_id}/{item_id(item)}" for item in inventory.get("network_segments", [])}
+    storage_ids = {}
+    for item in inventory.get("storage", []):
+        old_id = item_id(item)
+        storage_ids[old_id] = f"{host_id}/{old_id}"
+
+    services = []
+    for raw in inventory.get("services", []):
+        item = dict(raw)
+        item["id"] = service_ids[item_id(raw)]
+        item["runs_on"] = host_id
+        item["depends_on"] = [service_ids.get(value, value) for value in item.get("depends_on", [])]
+        item["uses_storage"] = [storage_ids.get(value, value) for value in item.get("uses_storage", [])]
+        if item.get("member_of"):
+            item["member_of"] = stack_ids.get(item["member_of"], item["member_of"])
+        item["network_segments"] = [network_ids.get(value, value) for value in item.get("network_segments", [])]
+        services.append(item)
+
+    storage = []
+    for raw in inventory.get("storage", []):
+        item = dict(raw)
+        item["id"] = storage_ids[item_id(raw)]
+        item["mounted_by"] = [host_id if value == "local-host" else value for value in item.get("mounted_by", [])]
+        storage.append(item)
+    stacks = [{**item, "id": stack_ids[item_id(item)], "runs_on": host_id}
+              for item in inventory.get("stacks", [])]
+    networks = [{**item, "id": network_ids[item_id(item)]} for item in inventory.get("network_segments", [])]
+    return {"services": services, "storage": storage, "stacks": stacks, "network_segments": networks}
+
+
+def remote_pvesh_getter(runner):
+    def getter(path: str) -> dict[str, Any]:
+        api_path, _, query = path.partition("?")
+        command = ["pvesh", "get", api_path, "--output-format", "json"]
+        for key, value in parse_qsl(query):
+            if key == "limit":
+                continue
+            command.extend([f"--{key.replace('_', '-')}", value])
+        code, stdout, stderr = runner(command, timeout=15)
+        if code != 0:
+            raise OSError((stderr.strip() or f"pvesh exited {code}")[:300])
+        return {"data": json.loads(stdout)}
+    return getter
+
+
+def rebase_proxmox_inventory(inventory: dict[str, Any], host_id: str) -> dict[str, Any]:
+    nodes = [dict(item) for item in inventory.get("nodes", [])]
+    if len(nodes) != 1:
+        return inventory
+    original = item_id(nodes[0])
+    nodes[0]["id"] = host_id
+    services = [{**item, "runs_on": host_id if item.get("runs_on") == original else item.get("runs_on")}
+                for item in inventory.get("services", [])]
+    storage = [{**item, "mounted_by": [host_id if value == original else value for value in item.get("mounted_by", [])]}
+               for item in inventory.get("storage", [])]
+    return {**inventory, "nodes": nodes, "services": services, "storage": storage}
+
+
+def collect_remote_host(
+    host_id: str,
+    target: str,
+    component: dict[str, Any],
+    identity: Path | None,
+    host_key_alias: str | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    runner = ssh_runner(target, identity, host_key_alias)
+    storage_inventory, storage_evidence = host_storage_discovery(runner)
+    capabilities = set(component.get("capabilities", []))
+    role = str(component.get("role", ""))
+    discovered = merge_inventory({}, namespace_remote_inventory(storage_inventory, host_id))
+    evidence = [{**storage_evidence, "source": f"ssh:{host_id}:storage"}]
+    if not component or "docker" in capabilities or "docker" in role:
+        docker_inventory, docker_evidence = docker_discovery(runner, require_local_binary=False)
+        discovered = merge_inventory(discovered, namespace_remote_inventory(docker_inventory, host_id))
+        evidence.insert(0, {**docker_evidence, "source": f"ssh:{host_id}:docker"})
+    if "proxmox" in capabilities or "proxmox" in role:
+        proxmox_inventory, proxmox_evidence = proxmox_discovery(
+            remote_pvesh_getter(runner), require_env=False,
+        )
+        discovered = merge_inventory(discovered, rebase_proxmox_inventory(proxmox_inventory, host_id))
+        evidence.append({**proxmox_evidence, "source": f"ssh:{host_id}:proxmox"})
+    return discovered, evidence
+
+
+def remote_discovery(
+    inventory: dict[str, Any],
+    targets: dict[str, str] | None = None,
+    identity: Path | None = None,
+    host_key_aliases: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    components = {item_id(item): item for group in ("nodes", "services") for item in inventory.get(group, [])}
+    resolved_targets = {item_id(item): item["ssh_target"] for item in components.values() if item.get("ssh_target")}
+    resolved_targets.update(targets or {})
+    aliases = host_key_aliases or {}
+    if not resolved_targets:
+        return {}, []
+
+    def collect(item: tuple[str, str]):
+        host_id, target = item
+        return collect_remote_host(host_id, target, components.get(host_id, {}), identity, aliases.get(host_id))
+
+    discovered: dict[str, Any] = {}
+    evidence: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(6, len(resolved_targets))) as executor:
+        results = list(executor.map(collect, sorted(resolved_targets.items())))
+    for host_inventory, host_evidence in results:
+        discovered = merge_inventory(discovered, host_inventory)
+        evidence.extend(host_evidence)
+    return discovered, evidence
+
+
 def load_inventory(path: Path) -> dict[str, Any]:
     raw = path.read_text(encoding="utf-8")
     data = json.loads(raw) if path.suffix.lower() == ".json" else yaml.safe_load(raw)
     if not isinstance(data, dict):
         raise ValueError("inventory must contain an object")
-    return data
+    return normalize_inventory(data, path)
+
+
+def endpoint_base(name: str, available: set[str]) -> str:
+    for suffix in ("_tailscale", "_tailnet", "_public", "_direct"):
+        if name.endswith(suffix) and name[:-len(suffix)] in available:
+            return name[:-len(suffix)]
+    return name
+
+
+def endpoint_exposure(urls: list[str]) -> str:
+    exposures = set()
+    for url in urls:
+        hostname = urlsplit(url).hostname or ""
+        if hostname in {"localhost", "127.0.0.1", "::1"}:
+            exposures.add("host-only")
+            continue
+        try:
+            address = ipaddress.ip_address(hostname)
+            if not address.is_global:
+                exposures.add("private-lan")
+                continue
+        except ValueError:
+            pass
+        if hostname.endswith((".ts.net", ".home.arpa", ".internal", ".local")):
+            exposures.add("private-lan")
+        else:
+            exposures.add("public")
+    return "public" if "public" in exposures else "private-lan" if "private-lan" in exposures else "host-only"
+
+
+def normalize_inventory(data: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+    """Accept the canonical list format and common operator-friendly keyed inventories."""
+    raw_nodes = data.get("nodes")
+    if not isinstance(raw_nodes, dict):
+        return data
+
+    node_rows = {str(name): row for name, row in raw_nodes.items() if isinstance(row, dict)}
+    service_counts: Counter[str] = Counter()
+    service_bases: dict[str, dict[str, str]] = {}
+    for node_name, row in node_rows.items():
+        raw_services = row.get("services", {})
+        names = {str(name) for name in raw_services} if isinstance(raw_services, dict) else set()
+        bases = {name: endpoint_base(name, names) for name in names}
+        service_bases[node_name] = bases
+        service_counts.update(set(bases.values()))
+
+    lab_name = data.get("homelab", {}).get("name") if isinstance(data.get("homelab"), dict) else None
+    if not lab_name and path:
+        lab_name = path.parent.parent.name if path.parent.name == "infra" else path.parent.name
+    normalized: dict[str, Any] = {
+        "homelab": {"name": lab_name or "homelab"},
+        "nodes": [], "services": [], "storage": [], "stacks": [], "network_segments": [],
+        "changes": list(data.get("changes", [])) if isinstance(data.get("changes"), list) else [],
+        "networks": dict(data.get("networks", {})) if isinstance(data.get("networks"), dict) else {},
+    }
+
+    for node_name, row in node_rows.items():
+        parent = row.get("parent")
+        common = {
+            "id": node_name,
+            "role": str(row.get("role", "host")),
+            "display_name": row.get("display_name"),
+            "address": row.get("lan_ip"),
+            "tailscale_address": row.get("tailscale_ip"),
+            "failure_domain": row.get("failure_domain"),
+            "capabilities": list(row.get("capabilities", [])) if isinstance(row.get("capabilities"), list) else [],
+            "source": "declared-keyed-inventory",
+        }
+        declared_ssh = row.get("ssh")
+        if isinstance(declared_ssh, str) and re.fullmatch(r"(?:[A-Za-z0-9_.-]+@)?[A-Za-z0-9_.:-]+", declared_ssh):
+            common["ssh_target"] = declared_ssh
+        common = {key: value for key, value in common.items() if value not in (None, "", [])}
+        if parent:
+            normalized["services"].append({
+                **common,
+                "kind": "proxmox-lxc" if row.get("proxmox_ctid") is not None else "guest-host",
+                "runs_on": str(parent),
+                "vmid": row.get("proxmox_ctid"),
+            })
+        else:
+            if row.get("proxmox_node_name"):
+                common["hostname"] = str(row["proxmox_node_name"])
+            normalized["nodes"].append(common)
+
+        pool = row.get("storage_pool")
+        if isinstance(pool, str) and re.fullmatch(r"[A-Za-z0-9_.:/-]{1,80}", pool):
+            normalized["storage"].append({
+                "id": f"storage:{node_name}:{pool}",
+                "kind": "zfs" if "zfs" in row.get("capabilities", []) else "storage-pool",
+                "mounted_by": [node_name],
+                "server_host": node_name,
+                "backup_status": "unknown",
+                "recovery_relevant": True,
+                "source": "declared-keyed-inventory",
+            })
+
+        mounts = row.get("mounts", {})
+        if isinstance(mounts, dict):
+            for mount_name, mount_target in mounts.items():
+                if not isinstance(mount_target, str):
+                    continue
+                parts = Path(mount_target).parts
+                server_host = parts[2] if len(parts) > 2 and parts[1] == "mnt" else None
+                normalized["storage"].append({
+                    "id": f"mount:{node_name}:{mount_name}", "kind": "network-mount",
+                    "mounted_by": [node_name], "mount_target": mount_target,
+                    "server_host": server_host, "backup_status": "unknown", "recovery_relevant": False,
+                    "source": "declared-keyed-inventory",
+                })
+
+        raw_stacks = row.get("stacks", {})
+        if isinstance(raw_stacks, dict):
+            for stack_name, stack_path in raw_stacks.items():
+                normalized["stacks"].append({
+                    "id": f"compose-stack:{node_name}/{stack_name}", "kind": "docker-compose",
+                    "name": str(stack_name), "runs_on": node_name, "declared_path": stack_path,
+                    "source": "declared-keyed-inventory",
+                })
+
+        raw_services = row.get("services", {})
+        if not isinstance(raw_services, dict):
+            continue
+        grouped: dict[str, list[Any]] = {}
+        for service_name, endpoint in raw_services.items():
+            grouped.setdefault(service_bases[node_name][str(service_name)], []).append(endpoint)
+        for base_name, endpoints in grouped.items():
+            service_id = base_name if service_counts[base_name] == 1 else f"{node_name}/{base_name}"
+            service = {
+                "id": service_id, "name": base_name, "kind": "declared-service",
+                "runs_on": node_name, "source": "declared-keyed-inventory",
+            }
+            urls = [value for value in endpoints if isinstance(value, str)
+                    and urlsplit(value).scheme in {"http", "https"} and urlsplit(value).hostname]
+            if urls:
+                parsed = urlsplit(urls[0])
+                scope = node_name if parsed.hostname in {"localhost", "127.0.0.1", "::1"} else "control"
+                service["healthcheck"] = {
+                    "url": urls[0], "timeout_seconds": 5, "mode": "reachability", "scope": scope,
+                }
+                service["endpoint_count"] = len(urls)
+                service["exposure"] = endpoint_exposure(urls)
+            descriptions = [value.casefold() for value in endpoints if isinstance(value, str)]
+            if "exposure" not in service and any(text.startswith("outbound ") for text in descriptions):
+                service["exposure"] = "outbound-only"
+            elif "exposure" not in service and any("127.0.0.1" in text or "localhost" in text for text in descriptions):
+                service["exposure"] = "host-only"
+            matching_stack = next((stack for stack in normalized["stacks"]
+                                   if stack.get("runs_on") == node_name and stack.get("name") == base_name), None)
+            if matching_stack:
+                service["member_of"] = matching_stack["id"]
+            normalized["services"].append(service)
+    return normalized
 
 
 def make_snapshot(inventory: dict[str, Any], observed_at: str) -> dict[str, Any]:
@@ -651,6 +1090,8 @@ def build_edges(inventory: dict[str, Any]) -> list[Edge]:
             edges.append(Edge(str(node_id), "mounts", item_id(storage)))
         if storage.get("served_by"):
             edges.append(Edge(item_id(storage), "served_by", str(storage["served_by"])))
+        if storage.get("backed_by"):
+            edges.append(Edge(item_id(storage), "backed_by", str(storage["backed_by"])))
     for stack in inventory.get("stacks", []):
         if stack.get("runs_on"):
             edges.append(Edge(item_id(stack), "runs_on", str(stack["runs_on"])))
@@ -678,7 +1119,8 @@ def analyze(inventory: dict[str, Any], edges: list[Edge]) -> tuple[list[Finding]
         if not service.get("runs_on"):
             unknowns.append(f"Where does service {service_id} run?")
         exposure = str(service.get("exposure", "unknown")).lower()
-        if exposure == "unknown":
+        host_component = service.get("kind") in {"proxmox-qemu", "proxmox-lxc", "guest-host"}
+        if exposure == "unknown" and not host_component:
             unknowns.append(f"How is service {service_id} exposed?")
         elif exposure in {"public", "public-internet", "internet", "publicly-exposed"}:
             findings.append(Finding("high", "public-service", service_id,
@@ -691,16 +1133,28 @@ def analyze(inventory: dict[str, Any], edges: list[Edge]) -> tuple[list[Finding]
         state = str(service.get("state", "")).lower()
         health = str(service.get("health", "")).lower()
         if state and state != "running":
-            findings.append(Finding("high", "service-not-running", service_id,
-                f"Container state is {state}.", "Inspect recent logs and the dependency graph before restarting it."))
+            if service.get("source") == "docker":
+                findings.append(Finding("medium", "stale-container", service_id,
+                    f"Undeclared discovered container state is {state}.",
+                    "Confirm whether it is retired before removing it or restoring it to service."))
+            else:
+                findings.append(Finding("high", "service-not-running", service_id,
+                    f"Container state is {state}.", "Inspect recent logs and the dependency graph before restarting it."))
         if health == "unhealthy":
             findings.append(Finding("high", "service-unhealthy", service_id,
                 "Container health check reports unhealthy.", "Inspect the health-check output, logs, and dependencies."))
+        if service.get("probe_status") == "reachable-with-tls-error":
+            findings.append(Finding("medium", "tls-verification-failed", service_id,
+                "The endpoint was reachable, but its TLS certificate could not be verified from this host.",
+                "Verify the certificate chain, hostname, and local trust store."))
 
     for store in storage:
         store_id = item_id(store)
         backup = str(store.get("backup_status", "unknown")).lower()
-        if store.get("recovery_relevant", True) and backup in {"unknown", "none", "missing", "stale", "failed", "unverified"}:
+        recovery_relevant = store.get(
+            "recovery_relevant", store.get("source") not in {"host-storage", "docker", "proxmox"},
+        )
+        if recovery_relevant and backup in {"unknown", "none", "missing", "stale", "failed", "unverified"}:
             severity = "high" if backup in {"none", "missing", "failed"} else "medium"
             findings.append(Finding(severity, "recovery-unproven", store_id,
                 f"Recovery status is {backup}; a successful backup job alone does not prove recovery.",
@@ -711,11 +1165,17 @@ def analyze(inventory: dict[str, Any], edges: list[Edge]) -> tuple[list[Finding]
             findings.append(Finding("high", "storage-inactive", store_id,
                 "Storage is reported inactive.", "Verify the storage path and upstream dependencies before restarting consumers."))
         capacity = store.get("capacity_percent")
-        if isinstance(capacity, int) and capacity >= 90:
+        if isinstance(capacity, int) and capacity >= 90 and not store.get("backed_by"):
             findings.append(Finding("high", "storage-capacity-critical", store_id,
                 f"Filesystem is {capacity}% full.", "Identify growth and reclaim or expand capacity with a separately approved plan."))
 
-    dependants = Counter(edge.target for edge in edges)
+    node_ids = {item_id(item) for item in nodes}
+    storage_ids = {item_id(item) for item in storage}
+    service_dependency_ids = {edge.target for edge in edges if edge.relation == "depends_on"}
+    shared_targets = node_ids | storage_ids | service_dependency_ids
+    dependants = Counter(edge.target for edge in edges
+                         if edge.target in shared_targets
+                         and edge.relation in {"runs_on", "uses", "mounts", "depends_on", "backed_by"})
     for target, count in sorted(dependants.items()):
         if count >= 2:
             findings.append(Finding("medium", "shared-dependency", target,
@@ -891,7 +1351,9 @@ def service_recovery_readiness(service: dict[str, Any], inventory: dict[str, Any
     }
 
 
-def attach_recovery_readiness(report: dict[str, Any], inventory: dict[str, Any]) -> None:
+def attach_recovery_readiness(
+    report: dict[str, Any], inventory: dict[str, Any], *, include_findings: bool = True,
+) -> None:
     services = [service_recovery_readiness(service, inventory, report["relationships"])
                 for service in inventory.get("services", [])]
     counts = Counter(service["status"] for service in services)
@@ -900,7 +1362,7 @@ def attach_recovery_readiness(report: dict[str, Any], inventory: dict[str, Any])
         "services": services,
         "principle": "A backup is a signal; a recent successful restore is evidence.",
     }
-    for service in services:
+    for service in services if include_findings else []:
         if service["status"] == "proven":
             continue
         severity = "high" if service["status"] == "unrecoverable" else "medium"
@@ -991,9 +1453,16 @@ def attach_update_intelligence(report: dict[str, Any], inventory: dict[str, Any]
     }
 
 
-def reachable(start: str, edges: list[dict[str, str]], reverse: bool = False) -> list[str]:
+def reachable(
+    start: str,
+    edges: list[dict[str, str]],
+    reverse: bool = False,
+    relations: set[str] | None = None,
+) -> list[str]:
     adjacency: dict[str, set[str]] = {}
     for edge in edges:
+        if relations is not None and edge["relation"] not in relations:
+            continue
         source, target = (edge["target"], edge["source"]) if reverse else (edge["source"], edge["target"])
         adjacency.setdefault(source, set()).add(target)
     seen: set[str] = set()
@@ -1031,8 +1500,9 @@ def event_is_recent(event_at: str, observed_at: str, hours: int = 24) -> bool:
 
 
 def investigate(report: dict[str, Any], inventory: dict[str, Any], requested_target: str) -> dict[str, Any]:
-    known = sorted({item_id(item) for group in ("nodes", "services", "storage", "stacks", "network_segments")
-                    for item in inventory.get(group, [])})
+    components = {item_id(item): item for group in ("nodes", "services", "storage", "stacks", "network_segments")
+                  for item in inventory.get(group, [])}
+    known = sorted(components)
     target = next((candidate for candidate in known if candidate.casefold() == requested_target.casefold()), None)
     if not target:
         return {
@@ -1041,24 +1511,24 @@ def investigate(report: dict[str, Any], inventory: dict[str, Any], requested_tar
             "conclusion": "The target is not present in discovered or declared inventory.",
         }
 
-    dependencies = reachable(target, report["relationships"])
+    causal_relations = {"runs_on", "uses", "depends_on", "served_by", "backed_by"}
+    dependencies = reachable(target, report["relationships"], relations=causal_relations)
     relevant = {target, *dependencies}
     candidates: list[dict[str, Any]] = []
     finding_scores = {
         "service-not-running": 96, "service-unhealthy": 92, "missing-dependency": 85,
         "storage-inactive": 90,
         "service-unrecoverable": 35, "service-recovery-unproven": 25,
-        "evidence-gap": 48, "recovery-unproven": 38, "broad-listen": 25,
-        "public-service": 25, "shared-dependency": 20,
+        "recovery-unproven": 38, "broad-listen": 25,
+        "public-service": 25, "shared-dependency": 20, "storage-capacity-critical": 40,
+        "stale-container": 10,
     }
     for finding in report["findings"]:
-        if finding["subject"] not in relevant and finding["code"] != "evidence-gap":
+        if finding["subject"] not in relevant:
             continue
         score = finding_scores.get(finding["code"], 30)
         if finding["subject"] in dependencies:
             score -= 5
-        if finding["code"] == "evidence-gap" and finding["subject"] not in relevant:
-            score -= 15
         candidates.append({
             "score": max(score, 1), "code": finding["code"], "subject": finding["subject"],
             "summary": finding["summary"],
@@ -1089,7 +1559,9 @@ def investigate(report: dict[str, Any], inventory: dict[str, Any], requested_tar
         root = candidate["subject"]
         hypotheses.append({
             "rank": len(hypotheses) + 1, "confidence": confidence, "score": score, **candidate,
-            "impacted": [item for item in reachable(root, report["relationships"], reverse=True) if item != root],
+            "impacted": [item for item in reachable(
+                root, report["relationships"], reverse=True, relations=causal_relations,
+            ) if item != root],
             "recommended_action": "Gather the verification evidence below before changing infrastructure.",
             "verification": verification_for(candidate["code"], root),
         })
@@ -1100,20 +1572,31 @@ def investigate(report: dict[str, Any], inventory: dict[str, Any], requested_tar
         hypotheses.append({
             "rank": 1, "confidence": "insufficient-evidence", "score": 0, "code": "no-observed-symptom",
             "subject": target, "summary": "No current symptom or relevant recent change explains the incident.",
-            "supporting_evidence": [], "impacted": reachable(target, report["relationships"], reverse=True),
+            "supporting_evidence": [], "impacted": reachable(
+                target, report["relationships"], reverse=True, relations=causal_relations,
+            ),
             "recommended_action": "Collect live health, logs, DNS, network, and storage evidence before changing anything.",
             "verification": verification_for("unknown", target),
         })
     top = hypotheses[0]
-    if top["score"] >= 50:
+    component = components[target]
+    current_observation = {key: component[key] for key in ("state", "health", "probe_status") if key in component}
+    observed_healthy = (
+        current_observation.get("state") in {None, "running", "active"}
+        and current_observation.get("health") in {"healthy", "reachable"}
+    )
+    if observed_healthy:
+        conclusion = f"{target} is currently observed running and reachable. No current incident is established."
+    elif top["score"] >= 50:
         conclusion = f"Top hypothesis ({top['confidence']}): {top['subject']} — {top['summary']}"
     elif top["score"]:
         conclusion = f"No likely cause is established. Strongest weak signal: {top['subject']} — {top['summary']}"
     else:
         conclusion = top["summary"]
     return {
-        "target": target, "status": "investigated", "dependencies": dependencies,
-        "impacted": reachable(target, report["relationships"], reverse=True),
+        "target": target, "status": "investigated", "current_observation": current_observation,
+        "dependencies": dependencies,
+        "impacted": reachable(target, report["relationships"], reverse=True, relations=causal_relations),
         "hypotheses": hypotheses, "suggestions": [], "conclusion": conclusion,
     }
 
@@ -1283,17 +1766,29 @@ def build_report(
     *,
     inventory_path: Path | None = None,
     discover: bool = True,
+    discover_local_host: bool = True,
+    discover_remote: bool = True,
+    ssh_targets: dict[str, str] | None = None,
+    ssh_identity: Path | None = None,
+    ssh_host_key_aliases: dict[str, str] | None = None,
     history_path: Path = DEFAULT_HISTORY,
     use_history: bool = True,
     investigate_target: str | None = None,
+    include_recovery_findings: bool = False,
     include_updates: bool = False,
     update_target: str | None = None,
 ) -> dict[str, Any]:
     """Collect evidence once and build the complete deterministic report model."""
     declared = load_inventory(inventory_path) if inventory_path else {}
-    discovered, evidence = discover_local() if discover else ({}, [])
+    discovered, evidence = discover_local() if discover and discover_local_host else ({}, [])
     if inventory_path:
         evidence.insert(0, {"source": "inventory", "status": "declared", "detail": str(inventory_path)})
+    if discover and discover_remote:
+        remote_inventory, remote_evidence = remote_discovery(
+            declared, ssh_targets, ssh_identity, ssh_host_key_aliases,
+        )
+        discovered = merge_inventory(discovered, remote_inventory)
+        evidence.extend(remote_evidence)
     inventory = merge_inventory(declared, discovered)
     inventory = infer_topology(inventory)
     if discover:
@@ -1309,7 +1804,7 @@ def build_report(
         attach_timeline(report, build_timeline(history, current))
         save_history(history_path, history, current)
     attach_external_changes(report, inventory.get("changes", []))
-    attach_recovery_readiness(report, inventory)
+    attach_recovery_readiness(report, inventory, include_findings=include_recovery_findings)
     if include_updates:
         attach_update_intelligence(report, inventory, update_target)
     if investigate_target:

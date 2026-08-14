@@ -57,6 +57,131 @@ class HomelabDoctorTests(unittest.TestCase):
             self.assertEqual(doctor.load_inventory(yaml_path)["homelab"]["name"], "yaml-lab")
             self.assertEqual(doctor.load_inventory(json_path)["homelab"]["name"], "json-lab")
 
+    def test_normalizes_keyed_operator_inventory_without_a_duplicate_flat_file(self):
+        inventory = doctor.normalize_inventory({"nodes": {
+            "pve": {"role": "proxmox", "lan_ip": "192.0.2.1", "storage_pool": "tank",
+                    "capabilities": ["proxmox", "zfs"]},
+            "apps": {"role": "docker", "parent": "pve", "proxmox_ctid": 200,
+                     "services": {"immich": "http://192.0.2.2:2283",
+                                  "immich_public": "https://photos.example"},
+                     "stacks": {"immich": "/srv/stacks/immich"}},
+            "media": {"role": "docker", "mounts": {"movies": "/mnt/pve/movies"},
+                      "services": {"jellyfin": "http://192.0.2.3:8096"}},
+        }}, Path("repo/infra/inventory.yaml"))
+        self.assertEqual(inventory["homelab"]["name"], "repo")
+        self.assertEqual({node["id"] for node in inventory["nodes"]}, {"pve", "media"})
+        apps = next(service for service in inventory["services"] if service["id"] == "apps")
+        immich = next(service for service in inventory["services"] if service.get("name") == "immich")
+        self.assertEqual(apps["runs_on"], "pve")
+        self.assertEqual(immich["runs_on"], "apps")
+        self.assertEqual(immich["endpoint_count"], 2)
+        self.assertEqual(immich["member_of"], "compose-stack:apps/immich")
+        mount = next(store for store in inventory["storage"] if store["id"] == "mount:media:movies")
+        self.assertEqual(mount["server_host"], "pve")
+
+    def test_keyed_inventory_skips_planning_prose_as_a_storage_pool(self):
+        inventory = doctor.normalize_inventory({"nodes": {
+            "future-backup": {
+                "capabilities": ["zfs"],
+                "storage_pool": "TBD — choose a mirrored pool after purchase",
+            },
+        }})
+        self.assertEqual(inventory["storage"], [])
+
+    def test_keyed_inventory_recognizes_outbound_and_loopback_services(self):
+        inventory = doctor.normalize_inventory({"nodes": {
+            "host": {"services": {
+                "agent": "outbound websocket to http://monitor.internal:8090",
+                "tts": "sidecar on 127.0.0.1:8000",
+            }},
+        }})
+        services = {service["id"]: service for service in inventory["services"]}
+        self.assertEqual(services["agent"]["exposure"], "outbound-only")
+        self.assertEqual(services["tts"]["exposure"], "host-only")
+
+    def test_tailscale_cgnat_address_is_not_public_exposure(self):
+        self.assertEqual(doctor.endpoint_exposure(["http://100.67.243.101:8096"]), "private-lan")
+        self.assertEqual(doctor.endpoint_exposure(["https://service.example"]), "public")
+
+    def test_reconciles_declared_service_with_unique_live_compose_service(self):
+        inventory = doctor.infer_topology({
+            "nodes": [{"id": "apps"}],
+            "services": [
+                {"id": "postgres", "name": "postgres", "kind": "declared-service",
+                 "runs_on": "apps", "source": "declared-keyed-inventory"},
+                {"id": "apps/compute-postgres-1", "kind": "docker-container", "runs_on": "apps",
+                 "compose_service": "postgres", "state": "running", "health": "healthy",
+                 "exposure": "local-or-unpublished", "source": "docker"},
+                {"id": "apps/api", "kind": "docker-container", "runs_on": "apps",
+                 "depends_on": ["apps/compute-postgres-1"], "source": "docker"},
+            ],
+        })
+        services = {service["id"]: service for service in inventory["services"]}
+        self.assertNotIn("apps/compute-postgres-1", services)
+        self.assertEqual(services["postgres"]["state"], "running")
+        self.assertEqual(services["postgres"]["kind"], "docker-container")
+        self.assertEqual(services["apps/api"]["depends_on"], ["postgres"])
+
+    def test_reconciles_declared_mount_through_nfs_to_backing_filesystem(self):
+        inventory = doctor.infer_topology({
+            "nodes": [{"id": "media"}, {"id": "nas"}],
+            "services": [{"id": "jellyfin", "runs_on": "media",
+                          "uses_storage": ["remote-storage:nas:media"]}],
+            "storage": [
+                {"id": "mount:media:media", "kind": "network-mount", "mounted_by": ["media"],
+                 "mount_target": "/mnt/nas/media", "source": "declared-keyed-inventory"},
+                {"id": "remote-storage:nas:media", "kind": "nfs", "mounted_by": ["media"],
+                 "mount_target": "/mnt/nas/media", "server_host": "nas", "export_path": "/tank/media",
+                 "source": "host-storage"},
+                {"id": "nas/tank", "kind": "local-filesystem", "mounted_by": ["nas"],
+                 "mount_target": "/tank", "source": "host-storage"},
+            ],
+        })
+        storage = {item["id"]: item for item in inventory["storage"]}
+        jellyfin = next(item for item in inventory["services"] if item["id"] == "jellyfin")
+        self.assertNotIn("remote-storage:nas:media", storage)
+        self.assertEqual(jellyfin["uses_storage"], ["mount:media:media"])
+        self.assertEqual(storage["mount:media:media"]["served_by"], "nas")
+        self.assertEqual(storage["mount:media:media"]["backed_by"], "nas/tank")
+
+    def test_proxmox_operational_storage_is_not_a_recovery_claim(self):
+        inventory = {
+            "nodes": [{"id": "pve"}],
+            "storage": [{"id": "pve-storage:pve:local", "mounted_by": ["pve"],
+                         "backup_status": "unknown", "source": "proxmox"}],
+        }
+        report = doctor.inspect_inventory(inventory, [])
+        self.assertNotIn("recovery-unproven", {finding["code"] for finding in report["findings"]})
+
+    def test_undeclared_stopped_container_is_stale_not_an_active_outage(self):
+        inventory = {"nodes": [{"id": "host"}], "services": [
+            {"id": "old", "kind": "docker-container", "runs_on": "host",
+             "state": "exited", "source": "docker", "exposure": "local-or-unpublished"},
+        ]}
+        report = doctor.inspect_inventory(inventory, [])
+        codes = {finding["code"] for finding in report["findings"]}
+        self.assertIn("stale-container", codes)
+        self.assertNotIn("service-not-running", codes)
+
+    @patch.object(doctor, "discover_local")
+    def test_remote_only_report_does_not_inspect_the_controller(self, discover_local):
+        report = doctor.build_report(
+            discover_local_host=False, discover_remote=False, use_history=False,
+        )
+        discover_local.assert_not_called()
+        self.assertEqual(report["summary"]["nodes"], 0)
+
+    def test_remote_collection_skips_docker_when_host_has_no_docker_capability(self):
+        storage_evidence = {"source": "host-storage", "status": "ok", "detail": "observed storage"}
+        with patch.object(doctor, "ssh_runner", return_value=object()), \
+             patch.object(doctor, "host_storage_discovery", return_value=({}, storage_evidence)), \
+             patch.object(doctor, "docker_discovery") as docker_discovery:
+            _, evidence = doctor.collect_remote_host(
+                "storage", "root@storage", {"role": "storage", "capabilities": ["zfs"]}, None, None,
+            )
+        docker_discovery.assert_not_called()
+        self.assertEqual([item["source"] for item in evidence], ["ssh:storage:storage"])
+
     @patch.object(doctor.shutil, "which", return_value="/usr/bin/docker")
     def test_discovers_docker_services_mounts_and_health(self, _which):
         ps = (
@@ -198,6 +323,25 @@ class HomelabDoctorTests(unittest.TestCase):
         self.assertEqual(result["hypotheses"][0]["confidence"], "insufficient-evidence")
         self.assertEqual(result["hypotheses"][0]["score"], 0)
 
+    def test_investigator_does_not_traverse_unrelated_host_mounts(self):
+        inventory = {
+            "nodes": [{"id": "host"}],
+            "services": [{"id": "app", "runs_on": "host", "uses_storage": ["app-data"]}],
+            "storage": [
+                {"id": "app-data", "mounted_by": ["host"]},
+                {"id": "unrelated", "mounted_by": ["host"]},
+            ],
+        }
+        result = doctor.investigate(doctor.inspect_inventory(inventory), inventory, "app")
+        self.assertIn("app-data", result["dependencies"])
+        self.assertNotIn("unrelated", result["dependencies"])
+
+    def test_investigator_leads_with_observed_healthy_state(self):
+        inventory = {"services": [{"id": "app", "state": "running", "health": "reachable"}]}
+        result = doctor.investigate(doctor.inspect_inventory(inventory), inventory, "app")
+        self.assertEqual(result["current_observation"], {"state": "running", "health": "reachable"})
+        self.assertIn("No current incident is established", result["conclusion"])
+
     def test_investigator_ranks_inactive_storage_as_likely_root_cause(self):
         inventory = {
             "nodes": [{"id": "host"}],
@@ -322,7 +466,7 @@ class HomelabDoctorTests(unittest.TestCase):
             inventory, evidence = doctor.proxmox_discovery(getter)
         self.assertEqual(evidence["status"], "ok")
         self.assertEqual(inventory["services"][0]["runs_on"], "pve-01")
-        self.assertEqual(inventory["services"][0]["uses_storage"], ["pve-storage:local-zfs"])
+        self.assertEqual(inventory["services"][0]["uses_storage"], ["pve-storage:pve-01:local-zfs"])
         self.assertEqual(inventory["storage"][0]["mounted_by"], ["pve-01"])
         self.assertEqual(inventory["changes"][0]["type"], "qmstart")
         self.assertEqual(inventory["changes"][0]["subject"], "docker-vm")
@@ -351,6 +495,62 @@ class HomelabDoctorTests(unittest.TestCase):
             inventory, evidence = doctor.proxmox_discovery(getter)
         self.assertEqual(evidence["status"], "partial")
         self.assertEqual(inventory["services"][0]["id"], "docker-vm")
+
+    def test_remote_pvesh_discovery_does_not_require_api_environment(self):
+        responses = {
+            "/nodes": [{"node": "pve", "status": "online"}],
+            "/cluster/resources?type=vm": [],
+            "/cluster/tasks?limit=50": [],
+            "/nodes/pve/storage": [],
+        }
+        with patch.dict(doctor.os.environ, {}, clear=True):
+            inventory, evidence = doctor.proxmox_discovery(
+                lambda path: {"data": responses[path]}, require_env=False,
+            )
+        self.assertEqual(evidence["status"], "ok")
+        self.assertEqual(inventory["nodes"][0]["id"], "pve")
+
+    def test_namespaces_remote_docker_topology_per_host(self):
+        inventory = {
+            "services": [{"id": "web", "runs_on": "local-host", "depends_on": ["db"],
+                          "uses_storage": ["docker-volume:data"], "member_of": "compose-stack:app",
+                          "network_segments": ["docker-network:default"]},
+                         {"id": "db", "runs_on": "local-host"}],
+            "storage": [{"id": "docker-volume:data", "mounted_by": ["local-host"]}],
+            "stacks": [{"id": "compose-stack:app", "runs_on": "local-host"}],
+            "network_segments": [{"id": "docker-network:default"}],
+        }
+        namespaced = doctor.namespace_remote_inventory(inventory, "apps")
+        web = next(item for item in namespaced["services"] if item["id"] == "apps/web")
+        self.assertEqual(web["depends_on"], ["apps/db"])
+        self.assertEqual(web["uses_storage"], ["apps/docker-volume:data"])
+        self.assertEqual(web["member_of"], "apps/compose-stack:app")
+        self.assertEqual(web["network_segments"], ["apps/docker-network:default"])
+        self.assertEqual(namespaced["storage"][0]["mounted_by"], ["apps"])
+
+    def test_namespaces_remote_mount_before_cross_host_canonicalization(self):
+        inventory = {"storage": [{"id": "remote-storage:nas:media", "mounted_by": ["local-host"]}]}
+        namespaced = doctor.namespace_remote_inventory(inventory, "media")
+        self.assertEqual(namespaced["storage"][0]["id"], "media/remote-storage:nas:media")
+
+    def test_host_storage_parses_modern_linux_mount_output(self):
+        def runner(command, timeout=10):
+            if command[0] == "df":
+                return 0, ("Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+                           "nas:/tank/media 100 50 50 50% /mnt/media\n"), ""
+            return 0, "nas:/tank/media on /mnt/media type nfs4 (rw,relatime)\n", ""
+        inventory, evidence = doctor.host_storage_discovery(runner)
+        self.assertEqual(evidence["status"], "ok")
+        self.assertEqual(inventory["storage"][0]["kind"], "nfs4")
+
+    def test_remote_pvesh_getter_drops_api_only_limit_parameter(self):
+        commands = []
+        def runner(command, timeout=10):
+            commands.append(command)
+            return 0, "[]", ""
+        getter = doctor.remote_pvesh_getter(runner)
+        self.assertEqual(getter("/cluster/tasks?limit=50"), {"data": []})
+        self.assertNotIn("--limit", commands[0])
 
     def test_host_storage_discovery_uses_private_opaque_ids(self):
         output = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk1 100 95 5 95% /Users/private\n"
@@ -405,6 +605,22 @@ class HomelabDoctorTests(unittest.TestCase):
         self.assertIn("service-unhealthy", {finding["code"] for finding in report["findings"]})
         self.assertNotIn("evidence-gap", {finding["code"] for finding in report["findings"]})
 
+    def test_reachability_probe_accepts_auth_response_without_claiming_health(self):
+        inventory = {"services": [{"id": "admin", "kind": "web", "healthcheck": {
+            "url": "https://admin.example", "mode": "reachability"}}]}
+        observed, evidence = doctor.endpoint_discovery(inventory, lambda url, timeout: 401)
+        self.assertEqual(evidence["status"], "ok")
+        self.assertEqual(observed["services"][0]["health"], "reachable")
+
+    def test_reachability_probe_reports_tls_trust_separately_from_outage(self):
+        inventory = {"services": [{"id": "admin", "kind": "web", "healthcheck": {
+            "url": "https://admin.example", "mode": "reachability"}}]}
+        def probe(url, timeout):
+            raise doctor.URLError(doctor.ssl.SSLCertVerificationError(1, "untrusted"))
+        observed, _ = doctor.endpoint_discovery(inventory, probe)
+        self.assertEqual(observed["services"][0]["health"], "reachable")
+        self.assertEqual(observed["services"][0]["probe_status"], "reachable-with-tls-error")
+
     def test_endpoint_probe_rejects_embedded_credentials_and_missing_env(self):
         inventory = {"services": [
             {"id": "bad", "kind": "web", "healthcheck": {"url": "https://user:pass@example/health"}},
@@ -454,6 +670,7 @@ class HomelabDoctorTests(unittest.TestCase):
         def runner(command, timeout=10):
             return (0, df, "") if command[0] == "df" else (0, mounts, "")
         host_storage, _ = doctor.host_storage_discovery(runner)
+        host_storage["storage"][0]["mounted_by"] = ["docker-host"]
         inventory = doctor.merge_inventory({
             "nodes": [{"id": "pve-01", "role": "proxmox"}],
             "services": [
