@@ -4,8 +4,7 @@ This repo is intentionally honest about what works today.
 
 ## Homelab Intelligence Doctor
 
-The packaged `homelab` CLI provides the product-facing, read-only experience
-(`scripts/homelab_doctor.py` remains as a compatibility wrapper):
+The packaged `homelab` CLI provides the product-facing, read-only experience:
 
 - no-argument discovery for the local host, Docker, filesystem capacity, DNS,
   and Tailscale state;

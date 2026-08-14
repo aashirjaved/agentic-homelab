@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,13 @@ def build_audit(run_validate: bool) -> list[dict[str, str]]:
         items.append(audited_item("Repository validator passes", "pass" if ok else "fail", output))
         ok, output = run_command([sys.executable, "scripts/smoke_mcp.py"], timeout=60)
         items.append(audited_item("MCP smoke tests pass", "pass" if ok else "fail", output))
+        with tempfile.TemporaryDirectory(prefix="agentic-homelab-release-") as output_dir:
+            ok, output = run_command([sys.executable, "-m", "build", "--outdir", output_dir], timeout=120)
+            items.append(audited_item("Python sdist and wheel build", "pass" if ok else "fail", output))
+            if ok:
+                artifacts = sorted(str(path) for path in Path(output_dir).iterdir())
+                ok, output = run_command([sys.executable, "-m", "twine", "check", *artifacts], timeout=60)
+                items.append(audited_item("Python package metadata passes twine", "pass" if ok else "fail", output))
     else:
         items.append(audited_item("Repository validator passes", "manual", "Run `make validate` before release."))
 
@@ -65,6 +73,7 @@ def build_audit(run_validate: bool) -> list[dict[str, str]]:
         ("Documentation index is present", "docs/index.md", ["Start", "Safety", "Client Quickstarts"]),
         ("Release readiness doc is present", "docs/release-readiness.md", ["Required", "Strongly Recommended"]),
         ("Implemented capabilities boundary is documented", "docs/implemented-capabilities.md", ["Implemented Reference MCP Servers", "Intentionally Not Implemented"]),
+        ("Incident demo is reproducible", "docs/assets/demo.tape", ["homelab investigate jellyfin", "docs/assets/demo-incident"]),
         ("Client compatibility docs cover named clients", "docs/client-compatibility.md", ["OpenClaw", "Hermes", "Claude", "Codex", "Cursor", "Grok"]),
         ("Action risk matrix docs are present", "docs/action-risk-matrix.md", ["destructive", "required evidence"]),
         ("Threat model is present", "docs/threat-model.md", ["Assets", "Primary Risks"]),
@@ -77,6 +86,9 @@ def build_audit(run_validate: bool) -> list[dict[str, str]]:
         ".github/workflows/validate.yml",
         ".github/pull_request_template.md",
         ".github/ISSUE_TEMPLATE/integration_request.md",
+        "docs/assets/demo.gif",
+        "docs/assets/demo-incident.inventory.yaml",
+        "pyproject.toml",
         "scripts/bootstrap_homelab_repo.py",
         "scripts/choose_workflow.py",
         "scripts/guardrail_check.py",

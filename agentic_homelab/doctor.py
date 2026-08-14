@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -15,14 +14,13 @@ import platform
 from pathlib import Path
 import re
 import shutil
+import ssl
 import subprocess
-import sys
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlsplit
-import ssl
 
 import yaml
 
@@ -228,10 +226,33 @@ def proxmox_discovery(getter=proxmox_get) -> tuple[dict[str, Any], dict[str, Any
         guest_rows = api_rows(getter, "/cluster/resources?type=vm")
         task_rows = api_rows(getter, "/cluster/tasks?limit=50")
         storage_rows: list[dict[str, Any]] = []
+        guest_storage: dict[str, list[str]] = {}
+        guest_config_errors = 0
         for node in node_rows:
             node_id = str(node.get("node", "unknown-node"))
             for storage in api_rows(getter, f"/nodes/{node_id}/storage"):
                 storage_rows.append({**storage, "node": node_id})
+        for guest in guest_rows:
+            node_id = guest.get("node")
+            guest_type = guest.get("type")
+            vmid = guest.get("vmid")
+            if not node_id or guest_type not in {"qemu", "lxc"} or vmid is None:
+                continue
+            try:
+                config = getter(f"/nodes/{node_id}/{guest_type}/{vmid}/config").get("data", {})
+                if not isinstance(config, dict):
+                    raise ValueError("guest config response did not contain an object")
+            except (HTTPError, URLError, OSError, ValueError, KeyError, json.JSONDecodeError):
+                guest_config_errors += 1
+                continue
+            storage_ids = set()
+            for key, value in config.items():
+                if not re.fullmatch(r"(?:ide|sata|scsi|virtio|mp)\d+|rootfs", str(key)) or not isinstance(value, str):
+                    continue
+                storage_name = value.split(",", 1)[0].split(":", 1)[0]
+                if storage_name and not storage_name.startswith("/") and storage_name != "none":
+                    storage_ids.add("pve-storage:" + storage_name)
+            guest_storage[str(vmid)] = sorted(storage_ids)
     except (HTTPError, URLError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         return {}, {"source": "proxmox", "status": "unavailable", "detail": str(exc)[:300]}
 
@@ -242,6 +263,7 @@ def proxmox_discovery(getter=proxmox_get) -> tuple[dict[str, Any], dict[str, Any
         guest_id = str(row.get("name") or f"{row.get('type', 'guest')}-{row.get('vmid', 'unknown')}")
         services.append({"id": guest_id, "kind": f"proxmox-{row.get('type', 'guest')}",
             "runs_on": str(row.get("node", "unknown-node")), "state": str(row.get("status", "unknown")),
+            "uses_storage": guest_storage.get(str(row.get("vmid")), []),
             "vmid": row.get("vmid"), "source": "proxmox"})
     storage: dict[str, dict[str, Any]] = {}
     for row in storage_rows:
@@ -257,8 +279,10 @@ def proxmox_discovery(getter=proxmox_get) -> tuple[dict[str, Any], dict[str, Any
                 "type": str(row.get("type", "task")), "status": str(row.get("status", "unknown")),
                 "timestamp": row.get("endtime") or row.get("starttime")} for row in task_rows]
     return {"nodes": nodes, "services": services, "storage": list(storage.values()), "changes": changes}, {
-        "source": "proxmox", "status": "ok",
-        "detail": f"observed {len(nodes)} nodes, {len(services)} guests, {len(storage)} storage systems, and {len(changes)} recent tasks"}
+        "source": "proxmox", "status": "partial" if guest_config_errors else "ok",
+        "detail": (f"observed {len(nodes)} nodes, {len(services)} guests, {len(storage)} storage systems, "
+                   f"and {len(changes)} recent tasks; {guest_config_errors} guest configs unavailable")
+    }
 
 
 def host_storage_discovery(runner=run_readonly) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -987,6 +1011,7 @@ def verification_for(code: str, subject: str) -> list[str]:
     plans = {
         "service-not-running": [f"Read recent logs for {subject}.", "Verify each dependency is reachable before considering a restart.", "Check the service health endpoint."],
         "service-unhealthy": [f"Read the health-check output and recent logs for {subject}.", "Verify storage, DNS, and network dependencies.", "Check the service health endpoint independently."],
+        "storage-inactive": [f"Verify {subject} is reachable from its consumers.", "Check the serving host and network path.", "Do not restart dependent services until the mount is available."],
         "missing-dependency": [f"Resolve the missing graph reference reported by {subject}.", "Verify the dependency exists and is reachable.", "Re-run the doctor to confirm the graph is complete."],
         "recovery-unproven": [f"Verify {subject} is mounted and readable from its consumers.", "Locate the latest backup and required recovery keys.", "Do not treat backup freshness as restore proof."],
         "evidence-gap": [f"Restore read-only access to the {subject} evidence source.", "Re-run discovery before taking corrective action."],
@@ -1006,7 +1031,8 @@ def event_is_recent(event_at: str, observed_at: str, hours: int = 24) -> bool:
 
 
 def investigate(report: dict[str, Any], inventory: dict[str, Any], requested_target: str) -> dict[str, Any]:
-    known = sorted({item_id(item) for group in ("nodes", "services", "storage") for item in inventory.get(group, [])})
+    known = sorted({item_id(item) for group in ("nodes", "services", "storage", "stacks", "network_segments")
+                    for item in inventory.get(group, [])})
     target = next((candidate for candidate in known if candidate.casefold() == requested_target.casefold()), None)
     if not target:
         return {
@@ -1020,6 +1046,7 @@ def investigate(report: dict[str, Any], inventory: dict[str, Any], requested_tar
     candidates: list[dict[str, Any]] = []
     finding_scores = {
         "service-not-running": 96, "service-unhealthy": 92, "missing-dependency": 85,
+        "storage-inactive": 90,
         "service-unrecoverable": 35, "service-recovery-unproven": 25,
         "evidence-gap": 48, "recovery-unproven": 38, "broad-listen": 25,
         "public-service": 25, "shared-dependency": 20,
@@ -1252,62 +1279,125 @@ def render_markdown(report: dict[str, Any], shared: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--inventory", type=Path, help="Optional YAML or JSON inventory to enrich local discovery")
-    parser.add_argument("--no-discover", action="store_true", help="Use only declared inventory")
-    parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    parser.add_argument("--share", type=Path, help="Write a redacted Markdown report safe to review and share")
-    parser.add_argument("--bundle", type=Path, help="Write a redacted diagnostic bundle to an empty directory")
-    parser.add_argument("--history", type=Path, default=DEFAULT_HISTORY, help="Local observation history path")
-    parser.add_argument("--no-history", action="store_true", help="Do not read or write observation history")
-    parser.add_argument("--investigate", metavar="COMPONENT", help="Rank read-only root-cause hypotheses for a service or component")
-    parser.add_argument("--plan-updates", nargs="?", const="", metavar="SERVICE",
-                        help="Assess all declared update candidates, or one service")
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    declared = load_inventory(args.inventory) if args.inventory else {}
-    discovered, evidence = ({}, []) if args.no_discover else discover_local()
-    if args.inventory:
-        evidence.insert(0, {"source": "inventory", "status": "declared", "detail": str(args.inventory)})
+def build_report(
+    *,
+    inventory_path: Path | None = None,
+    discover: bool = True,
+    history_path: Path = DEFAULT_HISTORY,
+    use_history: bool = True,
+    investigate_target: str | None = None,
+    include_updates: bool = False,
+    update_target: str | None = None,
+) -> dict[str, Any]:
+    """Collect evidence once and build the complete deterministic report model."""
+    declared = load_inventory(inventory_path) if inventory_path else {}
+    discovered, evidence = discover_local() if discover else ({}, [])
+    if inventory_path:
+        evidence.insert(0, {"source": "inventory", "status": "declared", "detail": str(inventory_path)})
     inventory = merge_inventory(declared, discovered)
     inventory = infer_topology(inventory)
-    if not args.no_discover:
+    if discover:
         endpoint_inventory, endpoint_evidence = endpoint_discovery(inventory)
         inventory = merge_observations(inventory, endpoint_inventory)
         evidence.append(endpoint_evidence)
     observed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     report = inspect_inventory(inventory, evidence)
     report["observed_at"] = observed_at
-    if not args.no_history:
-        history = load_history(args.history)
+    if use_history:
+        history = load_history(history_path)
         current = make_snapshot(inventory, observed_at)
         attach_timeline(report, build_timeline(history, current))
-        save_history(args.history, history, current)
+        save_history(history_path, history, current)
     attach_external_changes(report, inventory.get("changes", []))
     attach_recovery_readiness(report, inventory)
-    if args.plan_updates is not None:
-        attach_update_intelligence(report, inventory, args.plan_updates or None)
-    if args.investigate:
-        report["investigation"] = investigate(report, inventory, args.investigate)
-    output = json.dumps(report, indent=2, sort_keys=True) + "\n" if args.format == "json" else render_markdown(report)
-    print(output, end="")
-    if args.share:
-        args.share.parent.mkdir(parents=True, exist_ok=True)
-        args.share.write_text(redact(render_markdown(report, shared=True)), encoding="utf-8")
-        print(f"Shareable report written to {args.share}", file=sys.stderr)
-    if args.bundle:
-        try:
-            create_diagnostic_bundle(report, args.bundle)
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        print(f"Diagnostic bundle written to {args.bundle}", file=sys.stderr)
-    return 0
+    if include_updates:
+        attach_update_intelligence(report, inventory, update_target)
+    if investigate_target:
+        report["investigation"] = investigate(report, inventory, investigate_target)
+    return report
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def render_changes(report: dict[str, Any]) -> str:
+    timeline = report.get("timeline")
+    lines = ["# What changed", ""]
+    if not timeline:
+        lines.append("Change history is disabled or unavailable.")
+    elif timeline["status"] == "baseline":
+        lines.append("Baseline recorded. Run `homelab changes` again to compare observations.")
+    elif not timeline["events"]:
+        lines.append(f"No tracked changes since {timeline['previous_observed_at']}.")
+    else:
+        for event in timeline["events"]:
+            change = event["change"]
+            if change not in {"added", "removed"}:
+                change = f"{change}: {event['before']} → {event['after']}"
+            lines.append(
+                f"- {event['at']} [{event['severity'].upper()}] "
+                f"`{event['subject']}` ({event['category']}): {change}"
+            )
+    lines.extend(["", "No changes have been made."])
+    return "\n".join(lines) + "\n"
+
+
+def render_recovery(report: dict[str, Any]) -> str:
+    readiness = report["recovery_readiness"]
+    counts = readiness["summary"]
+    lines = [
+        "# Recovery evidence", "",
+        f"{counts['proven']} proven, {counts['partial']} partial, "
+        f"{counts['unproven']} unproven, {counts['unrecoverable']} unrecoverable.", "",
+        readiness["principle"], "",
+    ]
+    for service in readiness["services"]:
+        lines.append(f"## {service['service']}: {service['status']} ({service['score']}%)")
+        lines.append("")
+        lines.extend(f"- [{check['state'].upper()}] {check['name']}: {check['evidence']}" for check in service["checks"])
+        if service["next_actions"]:
+            lines.extend(["", "Next evidence to gather:"])
+            lines.extend(f"- {action}" for action in service["next_actions"])
+        lines.append("")
+    lines.append("No changes have been made.")
+    return "\n".join(lines) + "\n"
+
+
+def render_updates(report: dict[str, Any]) -> str:
+    updates = report["update_intelligence"]
+    lines = ["# Update evidence", "", updates["principle"], ""]
+    if not updates["plans"]:
+        lines.append("No matching update candidate was declared or observed.")
+    for plan in updates["plans"]:
+        lines.extend([
+            f"## {plan['service']}: {plan['decision']}", "",
+            f"Version: `{plan['current_version'] or 'unknown'}` → `{plan['target_version'] or 'unknown'}`", "",
+            plan["reason"], "",
+        ])
+        lines.extend(f"- [{gate['state'].upper()}] {gate['name']}: {gate['evidence']}" for gate in plan["gates"])
+        if plan["blast_radius"]:
+            lines.extend(["", "Potential blast radius: " + ", ".join(f"`{item}`" for item in plan["blast_radius"])])
+        lines.append("")
+    lines.append("No changes have been made.")
+    return "\n".join(lines) + "\n"
+
+
+def render_investigation(report: dict[str, Any]) -> str:
+    investigation = report["investigation"]
+    lines = [f"# Investigating {investigation['target']}", "", investigation["conclusion"], ""]
+    if investigation["status"] == "target-not-found":
+        if investigation["suggestions"]:
+            lines.append("Did you mean: " + ", ".join(f"`{item}`" for item in investigation["suggestions"]) + "?")
+    else:
+        significant = [item for item in investigation["hypotheses"] if item["score"] >= 50]
+        visible_hypotheses = significant or investigation["hypotheses"][:3]
+        for hypothesis in visible_hypotheses:
+            lines.extend([
+                f"## {hypothesis['rank']}. {hypothesis['confidence'].upper()} — {hypothesis['subject']}", "",
+                hypothesis["summary"], "", "Evidence:",
+            ])
+            lines.extend(f"- {item}" for item in hypothesis["supporting_evidence"] or ["No supporting evidence collected yet."])
+            lines.extend(["", "Potential impact:"])
+            lines.extend(f"- {item}" for item in hypothesis["impacted"] or ["No downstream dependents are known."])
+            lines.extend(["", f"Recommended next check: {hypothesis['recommended_action']}", "", "Verification:"])
+            lines.extend(f"- {step}" for step in hypothesis["verification"])
+            lines.append("")
+    lines.append("No changes have been made.")
+    return "\n".join(lines) + "\n"

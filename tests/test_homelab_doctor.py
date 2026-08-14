@@ -1,17 +1,11 @@
-import importlib.util
 from pathlib import Path
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from agentic_homelab import doctor
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("homelab_doctor", ROOT / "scripts/homelab_doctor.py")
-doctor = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader
-sys.modules[SPEC.name] = doctor
-SPEC.loader.exec_module(doctor)
 
 
 class HomelabDoctorTests(unittest.TestCase):
@@ -204,6 +198,17 @@ class HomelabDoctorTests(unittest.TestCase):
         self.assertEqual(result["hypotheses"][0]["confidence"], "insufficient-evidence")
         self.assertEqual(result["hypotheses"][0]["score"], 0)
 
+    def test_investigator_ranks_inactive_storage_as_likely_root_cause(self):
+        inventory = {
+            "nodes": [{"id": "host"}],
+            "services": [{"id": "jellyfin", "runs_on": "host", "uses_storage": ["media"]}],
+            "storage": [{"id": "media", "state": "inactive", "mounted_by": ["host"]}],
+        }
+        report = doctor.inspect_inventory(inventory)
+        result = doctor.investigate(report, inventory, "jellyfin")
+        self.assertEqual(result["hypotheses"][0]["code"], "storage-inactive")
+        self.assertEqual(result["hypotheses"][0]["confidence"], "likely")
+
     def test_recovery_readiness_proven_for_complete_stateless_service(self):
         inventory = {"services": [{"id": "proxy", "kind": "proxy", "recovery": {
             "configuration_status": "version-controlled", "secrets_required": False,
@@ -307,6 +312,7 @@ class HomelabDoctorTests(unittest.TestCase):
                                              "name": "docker-vm", "status": "running"}],
             "/cluster/tasks?limit=50": [{"node": "pve-01", "id": 101, "type": "qmstart", "status": "OK", "endtime": 100}],
             "/nodes/pve-01/storage": [{"storage": "local-zfs", "type": "zfspool", "active": 1}],
+            "/nodes/pve-01/qemu/101/config": {"scsi0": "local-zfs:vm-101-disk-0,size=32G"},
         }
         def getter(path):
             return {"data": responses[path]}
@@ -316,6 +322,7 @@ class HomelabDoctorTests(unittest.TestCase):
             inventory, evidence = doctor.proxmox_discovery(getter)
         self.assertEqual(evidence["status"], "ok")
         self.assertEqual(inventory["services"][0]["runs_on"], "pve-01")
+        self.assertEqual(inventory["services"][0]["uses_storage"], ["pve-storage:local-zfs"])
         self.assertEqual(inventory["storage"][0]["mounted_by"], ["pve-01"])
         self.assertEqual(inventory["changes"][0]["type"], "qmstart")
         self.assertEqual(inventory["changes"][0]["subject"], "docker-vm")
@@ -325,6 +332,25 @@ class HomelabDoctorTests(unittest.TestCase):
             inventory, evidence = doctor.proxmox_discovery()
         self.assertEqual(inventory, {})
         self.assertEqual(evidence["status"], "not-configured")
+
+    def test_proxmox_keeps_inventory_when_guest_config_is_unavailable(self):
+        responses = {
+            "/nodes": [{"node": "pve-01", "status": "online"}],
+            "/cluster/resources?type=vm": [{"node": "pve-01", "type": "qemu", "vmid": 101,
+                                             "name": "docker-vm", "status": "running"}],
+            "/cluster/tasks?limit=50": [],
+            "/nodes/pve-01/storage": [],
+        }
+        def getter(path):
+            if path.endswith("/config"):
+                raise OSError("permission denied")
+            return {"data": responses[path]}
+        env = {"PROXMOX_API_URL": "https://pve.example", "PROXMOX_API_TOKEN_ID": "id",
+               "PROXMOX_API_TOKEN_SECRET": "secret"}
+        with patch.dict(doctor.os.environ, env, clear=False):
+            inventory, evidence = doctor.proxmox_discovery(getter)
+        self.assertEqual(evidence["status"], "partial")
+        self.assertEqual(inventory["services"][0]["id"], "docker-vm")
 
     def test_host_storage_discovery_uses_private_opaque_ids(self):
         output = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk1 100 95 5 95% /Users/private\n"

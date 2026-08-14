@@ -1,0 +1,44 @@
+homelab:
+  name: media-lab
+
+nodes:
+  - id: pve-01
+    role: proxmox
+    state: online
+  - id: docker-host
+    role: docker
+    state: online
+
+services:
+  - id: nas01
+    kind: proxmox-qemu
+    runs_on: pve-01
+    state: running
+  - id: jellyfin
+    kind: docker-container
+    runs_on: docker-host
+    uses_storage: [media-nfs]
+    state: running
+  - id: sonarr
+    kind: docker-container
+    runs_on: docker-host
+    uses_storage: [media-nfs]
+    state: running
+  - id: radarr
+    kind: docker-container
+    runs_on: docker-host
+    uses_storage: [media-nfs]
+    state: running
+  - id: immich
+    kind: docker-container
+    runs_on: docker-host
+    uses_storage: [media-nfs]
+    state: running
+
+storage:
+  - id: media-nfs
+    kind: nfs
+    mounted_by: [docker-host]
+    served_by: nas01
+    state: inactive
+    backup_status: unknown
