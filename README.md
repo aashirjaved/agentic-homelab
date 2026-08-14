@@ -19,61 +19,58 @@ Ask the questions that normally require checking five different dashboards:
 - What changed last night?
 - Where are my single points of failure?
 
-> It can see everything. It changes nothing.
+> It shows what the evidence connects—and what it still cannot prove. It changes nothing.
 
 The project starts read-only. Its MCP servers, safety policies, and approval
 gates are the machinery behind the product—not the reason you should use it.
 
 > Practical over hype. Read-only first. Human-approved writes. Mechanical verification.
 
-![Guardrail demo: reads flow, risky actions stop for approval](docs/assets/demo.gif)
-
 ```console
-$ python3 scripts/guardrail_check.py destructive
-action: destructive
-server: None
-decision: destructive_approval_required
-risk: destructive
-required_evidence:
-- separate destructive-action approval
-- target identifier repeated by the human
-- verified backup or explicit no-backup acknowledgement
-- recovery plan
-next_step: Stop for separate destructive-action approval that repeats the exact target and verifier.
-policy: default-homelab-policy (mode: read-only)
+$ homelab investigate jellyfin
+# media-lab: explained
+
+Found 3 nodes, 5 services, 2 storage systems, 1 stack,
+2 networks, and 16 relationships.
+
+## Why is jellyfin broken?
+Top hypothesis (high): media-nfs — dependency health check failed.
+
+Path inspected:
+jellyfin → media-stack → docker-host → media-nfs → nas01 → pve-01
+
+No changes have been made.
 ```
 
-Every action an agent wants to take is classified before it runs. Reads flow
-freely; writes stop and ask; destructive operations demand a backup and a
-human repeating the exact target.
+Collectors gather read-only evidence, deterministic inference connects the
+topology, and explicit rules produce findings and ranked hypotheses. Agent
+reasoning can consume that evidence later; it is not required to trust the
+doctor's output. **Deterministic evidence first. Agent reasoning second.**
 
 ```mermaid
 flowchart LR
-    A[Agent proposes action] --> B{guardrail_check}
-    B -->|read / plan| C[Runs immediately]
-    B -->|write / credential| D[Stops: human approval]
-    B -->|destructive| E[Stops: backup verified +\nhuman repeats exact target]
-    B -->|unknown| F[Blocked: classify first]
+    A["Docker / host mounts / Proxmox / inventory"] --> B["Normalized evidence"]
+    B --> C["Topology inference"]
+    C --> D["Dependency graph"]
+    D --> E["Risks, unknowns, recovery evidence"]
+    D --> F["Deterministic incident hypotheses"]
 ```
 
 ## Quick Start: See Your Homelab in Minutes
 
-Clone, install the small Python dependency set, and run the doctor against the
-starter inventory:
+Install from a clone with `pipx`, then run the doctor:
 
 ```bash
 git clone https://github.com/aashirjaved/agentic-homelab.git
 cd agentic-homelab
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements-dev.txt
-python scripts/homelab_doctor.py
+pipx install .
+homelab doctor
 ```
 
 Investigate a specific service with the same command:
 
 ```bash
-python scripts/homelab_doctor.py --investigate jellyfin
+homelab investigate jellyfin
 ```
 
 The investigator traverses Jellyfin's dependencies, correlates current findings
@@ -81,20 +78,22 @@ with the latest timeline changes, ranks root-cause hypotheses, shows downstream
 impact, and gives read-only verification steps. It reports insufficient evidence
 instead of inventing a cause.
 
-The same report answers “can I recover it?” per service. It checks configuration,
-keys and secrets, restore runbooks, tested restores, every stateful storage
-dependency, and backup failure-domain separation. A fresh backup is treated as a
-signal; a successful restore is evidence.
+The same report answers “what recovery evidence is declared?” per service. It
+scores supplied metadata for configuration, keys and secrets, restore runbooks,
+restore-test dates, stateful storage, and backup failure-domain separation. It
+does not inspect backup contents or perform a restore. A fresh backup is a
+signal; a successful restore test is stronger evidence.
 
 Ask what is safe to update without enabling auto-update:
 
 ```bash
-python scripts/homelab_doctor.py --plan-updates
+homelab updates
 ```
 
-The result gates candidates on current health, recovery readiness, release and
-breaking-change research, rollback, verification, recent stability, and blast
-radius. “Ready for approval” deliberately does not mean “executed.”
+The result gates candidates on current health and supplied metadata for recovery,
+release research, rollback, verification, recent stability, and blast radius.
+The doctor does not fetch release notes or vulnerability feeds yet. “Ready for
+approval” deliberately does not mean “executed.”
 
 The command safely inspects the local host, Docker, storage capacity, DNS and
 Tailscale state, plus Proxmox when a scoped API token is configured. If a source
@@ -104,7 +103,7 @@ dependency knowledge. To create a redacted report for Reddit, Discord, GitHub,
 or a forum:
 
 ```bash
-python scripts/homelab_doctor.py \
+homelab doctor \
   --inventory path/to/homelab.inventory.yaml \
   --share diagnostics/homelab-report.md
 ```
@@ -112,10 +111,9 @@ python scripts/homelab_doctor.py \
 Or create a complete redacted support bundle:
 
 ```bash
-python scripts/homelab_doctor.py \
+homelab share diagnostics/jellyfin-incident \
   --inventory path/to/homelab.inventory.yaml \
-  --investigate jellyfin \
-  --bundle diagnostics/jellyfin-incident
+  --investigate jellyfin
 ```
 
 Vendor-neutral HTTP health checks can be declared for services and NAS/storage
@@ -295,9 +293,8 @@ python3 scripts/generate_mcp_config.py \
 Create a redacted intelligence and diagnostics bundle:
 
 ```bash
-python3 scripts/homelab_doctor.py \
-  --inventory templates/inventory/homelab.inventory.example.yaml \
-  --bundle diagnostics/example
+homelab share diagnostics/example \
+  --inventory templates/inventory/homelab.inventory.example.yaml
 ```
 
 ## Documentation Map

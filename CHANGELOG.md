@@ -7,7 +7,20 @@ changes, safety changes, and compatibility notes.
 
 ## Unreleased
 
-- Nothing yet.
+### Added
+
+- Inferred Docker Compose stacks, Compose dependencies, Docker networks, named
+  volumes, container bind-mount backing storage, and NFS/SMB serving hosts.
+- Explicit unresolved topology relationships when a bind mount, Compose
+  dependency, or storage server cannot be connected safely.
+- Installable `agentic-homelab` Python package and `homelab` command with
+  `doctor`, `investigate`, `changes`, `recovery`, `updates`, and `share` entrypoints.
+
+### Changed
+
+- Product language now distinguishes observed evidence from declared recovery
+  and update metadata, and documents the deterministic investigator boundary.
+- The README hero now demonstrates incident investigation instead of guardrails.
 
 ## 0.1.1 - 2026-08-13
 

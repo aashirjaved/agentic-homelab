@@ -84,7 +84,8 @@ class HomelabDoctorTests(unittest.TestCase):
         report = doctor.inspect_inventory(inventory, [evidence])
         service = inventory["services"][0]
         codes = {finding["code"] for finding in report["findings"]}
-        self.assertEqual(service["uses_storage"], ["volume:media"])
+        self.assertEqual(service["uses_storage"], [])
+        self.assertEqual(service["bind_sources"], ["/srv/media"])
         self.assertIn("service-unhealthy", codes)
         self.assertIn("broad-listen", codes)
         self.assertEqual(evidence["status"], "ok")
@@ -329,8 +330,8 @@ class HomelabDoctorTests(unittest.TestCase):
         output = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk1 100 95 5 95% /Users/private\n"
         inventory, evidence = doctor.host_storage_discovery(lambda command: (0, output, ""))
         self.assertEqual(evidence["status"], "ok")
-        self.assertEqual(inventory["storage"][0]["id"], "local-filesystem:1")
-        self.assertNotIn("/Users/private", str(inventory))
+        self.assertTrue(inventory["storage"][0]["id"].startswith("local-filesystem:"))
+        self.assertEqual(inventory["storage"][0]["mount_target"], "/Users/private")
         report = doctor.inspect_inventory(inventory)
         self.assertIn("storage-capacity-critical", {finding["code"] for finding in report["findings"]})
         self.assertNotIn("recovery-unproven", {finding["code"] for finding in report["findings"]})
@@ -394,6 +395,63 @@ class HomelabDoctorTests(unittest.TestCase):
                                     "healthcheck": {"url": "https://private.example/secret"}}]}
         snapshot = doctor.make_snapshot(inventory, "2026-01-01T00:00:00Z")
         self.assertNotIn("private.example", str(snapshot))
+
+    @patch.object(doctor.shutil, "which", return_value="/usr/bin/docker")
+    def test_docker_discovers_compose_dependencies_stacks_and_networks(self, _which):
+        ps = "\n".join([
+            '{"ID":"1","Names":"media-jellyfin-1","Image":"jellyfin:latest","Status":"Up","Ports":""}',
+            '{"ID":"2","Names":"media-db-1","Image":"postgres:16","Status":"Up","Ports":""}',
+        ])
+        inspected = doctor.json.dumps([
+            {"Name": "/media-jellyfin-1", "State": {"Status": "running"}, "Mounts": [],
+             "Config": {"Labels": {"com.docker.compose.project": "media", "com.docker.compose.service": "jellyfin",
+                                     "com.docker.compose.depends_on": "db:service_healthy:false"}},
+             "NetworkSettings": {"Networks": {"media_default": {"Gateway": "172.20.0.1"}}}},
+            {"Name": "/media-db-1", "State": {"Status": "running"}, "Mounts": [],
+             "Config": {"Labels": {"com.docker.compose.project": "media", "com.docker.compose.service": "db"}},
+             "NetworkSettings": {"Networks": {"media_default": {"Gateway": "172.20.0.1"}}}},
+        ])
+        def runner(command, timeout=10):
+            return (0, ps, "") if command[1] == "ps" else (0, inspected, "")
+        inventory, _ = doctor.docker_discovery(runner)
+        graph = doctor.infer_topology(inventory)
+        edges = {(edge.source, edge.relation, edge.target) for edge in doctor.build_edges(graph)}
+        self.assertIn(("media-jellyfin-1", "depends_on", "media-db-1"), edges)
+        self.assertIn(("media-jellyfin-1", "member_of", "compose-stack:media"), edges)
+        self.assertIn(("media-jellyfin-1", "connected_to", "docker-network:media_default"), edges)
+        self.assertEqual(len(graph["stacks"]), 1)
+        self.assertEqual(len(graph["network_segments"]), 1)
+
+    def test_infers_jellyfin_nfs_nas_vm_proxmox_chain(self):
+        df = "Filesystem 1024-blocks Used Available Capacity Mounted on\nnas01:/media 100 50 50 50% /mnt/media\n"
+        mounts = "nas01:/media on /mnt/media (nfs, nodev)\n"
+        def runner(command, timeout=10):
+            return (0, df, "") if command[0] == "df" else (0, mounts, "")
+        host_storage, _ = doctor.host_storage_discovery(runner)
+        inventory = doctor.merge_inventory({
+            "nodes": [{"id": "pve-01", "role": "proxmox"}],
+            "services": [
+                {"id": "nas01", "kind": "proxmox-qemu", "runs_on": "pve-01"},
+                {"id": "jellyfin", "kind": "docker-container", "runs_on": "docker-host",
+                 "bind_sources": ["/mnt/media/movies"]},
+            ],
+        }, host_storage)
+        graph = doctor.infer_topology(inventory)
+        remote = next(item for item in graph["storage"] if item["kind"] == "nfs")
+        edges = {(edge.source, edge.relation, edge.target) for edge in doctor.build_edges(graph)}
+        self.assertIn(("jellyfin", "uses", remote["id"]), edges)
+        self.assertIn((remote["id"], "served_by", "nas01"), edges)
+        self.assertIn(("nas01", "runs_on", "pve-01"), edges)
+        self.assertEqual(graph["unresolved_relationships"], [])
+
+    def test_unmatched_bind_and_storage_server_are_reported_as_unknown(self):
+        inventory = {"services": [{"id": "app", "kind": "docker-container", "bind_sources": ["/mystery/data"]}],
+                     "storage": [{"id": "remote", "kind": "nfs", "server_host": "unknown-nas", "mounted_by": []}]}
+        graph = doctor.infer_topology(inventory)
+        report = doctor.inspect_inventory(graph)
+        self.assertEqual(report["summary"]["unresolved_relationships"], 2)
+        self.assertTrue(any("Unresolved uses_storage" in item for item in report["unknowns"]))
+        self.assertTrue(any(node["id"] == "discovered-host:unknown-nas" for node in graph["nodes"]))
 
     def test_diagnostic_bundle_contains_only_redacted_derived_artifacts(self):
         report = doctor.inspect_inventory({"homelab": {"name": "lab 192.168.1.10"}, "nodes": []}, [{

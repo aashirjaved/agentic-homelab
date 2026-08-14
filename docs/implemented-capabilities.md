@@ -4,13 +4,15 @@ This repo is intentionally honest about what works today.
 
 ## Homelab Intelligence Doctor
 
-`scripts/homelab_doctor.py` provides the product-facing, read-only experience:
+The packaged `homelab` CLI provides the product-facing, read-only experience
+(`scripts/homelab_doctor.py` remains as a compatibility wrapper):
 
 - no-argument discovery for the local host, Docker, filesystem capacity, DNS,
   and Tailscale state;
 - optional scoped Proxmox discovery for nodes, guests, storage, and tasks;
 - vendor-neutral service and NAS HTTP health probes that retain no URL/body;
-- a Homelab Graph spanning nodes, services, storage, and dependencies;
+- a Homelab Graph spanning nodes, services, storage, Compose stacks, Docker
+  networks, inferred mount backing, and dependencies;
 - ranked incident hypotheses, blast radius, evidence, and verification steps;
 - a bounded semantic “what changed?” timeline;
 - per-service recovery readiness and human-controlled update intelligence;
