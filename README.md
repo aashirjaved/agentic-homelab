@@ -55,6 +55,10 @@ pipx install "git+https://github.com/aashirjaved/agentic-homelab.git@v0.2.1"
 homelab doctor
 ```
 
+The default Markdown is a concise action brief for routine operator and agent
+loops. Use `homelab doctor --full` for the complete human-readable graph and
+evidence report, or `--format json` for the full machine-readable model.
+
 Investigate a specific service with the same command:
 
 ```bash
@@ -71,6 +75,12 @@ scores supplied metadata for configuration, keys and secrets, restore runbooks,
 restore-test dates, stateful storage, and backup failure-domain separation. It
 does not inspect backup contents or perform a restore. A fresh backup is a
 signal; a successful restore test is stronger evidence.
+
+Only services with a non-empty `recovery` block (or `recovery_required: true`)
+are scored. Discovered endpoints without recovery declarations are reported as
+unmodeled coverage, not dozens of identical “unproven” failures. Restore drills
+may be recorded beside a service as `recovery.restore_test`, or centrally in a
+top-level `restore_tests` list for reuse by inventory generators and agents.
 
 Ask what is safe to update without enabling auto-update:
 

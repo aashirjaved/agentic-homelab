@@ -960,6 +960,22 @@ def normalize_inventory(data: dict[str, Any], path: Path | None = None) -> dict[
             if matching_stack:
                 service["member_of"] = matching_stack["id"]
             normalized["services"].append(service)
+    # Keyed inventories may also carry canonical service/storage declarations.
+    # Preserve and overlay those rows so operator-authored recovery evidence is
+    # not discarded when endpoint shorthand is expanded.
+    for group in ("services", "storage"):
+        declared_rows = data.get(group, [])
+        if not isinstance(declared_rows, list):
+            continue
+        by_id = {item_id(item): item for item in normalized[group]}
+        for declared in declared_rows:
+            if not isinstance(declared, dict):
+                continue
+            identifier = item_id(declared)
+            by_id[identifier] = {**by_id.get(identifier, {}), **declared}
+        normalized[group] = sorted(by_id.values(), key=item_id)
+    if isinstance(data.get("restore_tests"), list):
+        normalized["restore_tests"] = list(data["restore_tests"])
     return normalized
 
 
@@ -1184,7 +1200,12 @@ def analyze(inventory: dict[str, Any], edges: list[Edge]) -> tuple[list[Finding]
 
     if not inventory.get("changes"):
         unknowns.append(CHANGE_HISTORY_UNKNOWN)
-    if not inventory.get("restore_tests"):
+    service_restore_evidence = any(
+        isinstance(service.get("recovery"), dict)
+        and (service["recovery"].get("last_restore_test") or service["recovery"].get("restore_test"))
+        for service in services
+    )
+    if not inventory.get("restore_tests") and not service_restore_evidence:
         unknowns.append("No restore-test evidence is recorded.")
     for relationship in inventory.get("unresolved_relationships", []):
         unknowns.append(f"Unresolved {relationship['relation']} from {relationship['source']}: {relationship['clue']}")
@@ -1256,6 +1277,30 @@ def recent_restore_test(value: Any, max_age_days: int = 365) -> tuple[str, str]:
     return ("pass", f"{age_days} days ago") if age_days <= max_age_days else ("fail", f"stale: {age_days} days ago")
 
 
+def restore_test_for(service_id: str, recovery: dict[str, Any], inventory: dict[str, Any]) -> tuple[Any, str | None]:
+    """Resolve service-local or top-level restore evidence without treating a backup as a test."""
+    evidence = recovery.get("restore_test")
+    source = "service recovery.restore_test" if evidence is not None else None
+    if evidence is None and recovery.get("last_restore_test") is not None:
+        evidence = recovery.get("last_restore_test")
+        source = "service recovery.last_restore_test"
+    if evidence is None:
+        for candidate in inventory.get("restore_tests", []):
+            if not isinstance(candidate, dict):
+                continue
+            subjects = candidate.get("services", [candidate.get("service") or candidate.get("service_id")])
+            if service_id in subjects:
+                evidence, source = candidate, "inventory restore_tests"
+                break
+    if isinstance(evidence, dict):
+        status = str(evidence.get("status", "unknown")).lower()
+        tested_at = evidence.get("tested_at") or evidence.get("completed_at") or evidence.get("date")
+        if status not in {"passed", "pass", "successful", "success", "verified"}:
+            return "never" if status in {"failed", "fail"} else None, source
+        return tested_at, source
+    return evidence, source
+
+
 def readiness_check(name: str, state: str, evidence: str, action: str, blocking: bool = False) -> dict[str, Any]:
     return {"name": name, "state": state, "evidence": evidence, "action": action, "blocking": blocking}
 
@@ -1287,7 +1332,10 @@ def service_recovery_readiness(service: dict[str, Any], inventory: dict[str, Any
     checks.append(readiness_check("restore-runbook", runbook_state, str(runbook or "unknown"),
         "Document ordered restore steps and their prerequisites."))
 
-    test_state, test_detail = recent_restore_test(recovery.get("last_restore_test"))
+    restore_test, restore_test_source = restore_test_for(service_id, recovery, inventory)
+    test_state, test_detail = recent_restore_test(restore_test)
+    if restore_test_source:
+        test_detail = f"{test_detail} ({restore_test_source})"
     checks.append(readiness_check("restore-test", test_state, test_detail,
         "Run a separately approved restore drill into a non-production destination."))
 
@@ -1354,11 +1402,17 @@ def service_recovery_readiness(service: dict[str, Any], inventory: dict[str, Any
 def attach_recovery_readiness(
     report: dict[str, Any], inventory: dict[str, Any], *, include_findings: bool = True,
 ) -> None:
+    inventory_services = inventory.get("services", [])
+    modeled = [service for service in inventory_services
+               if service.get("recovery_required") is True
+               or (isinstance(service.get("recovery"), dict) and service["recovery"])]
+    unmodeled = sorted(item_id(service) for service in inventory_services if service not in modeled)
     services = [service_recovery_readiness(service, inventory, report["relationships"])
-                for service in inventory.get("services", [])]
+                for service in modeled]
     counts = Counter(service["status"] for service in services)
     report["recovery_readiness"] = {
         "summary": {status: counts.get(status, 0) for status in ("proven", "partial", "unproven", "unrecoverable")},
+        "coverage": {"modeled": len(modeled), "unmodeled": len(unmodeled), "unmodeled_services": unmodeled},
         "services": services,
         "principle": "A backup is a signal; a recent successful restore is evidence.",
     }
@@ -1762,6 +1816,69 @@ def render_markdown(report: dict[str, Any], shared: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_doctor_summary(report: dict[str, Any]) -> str:
+    """Render a routine action brief while preserving the complete report for JSON and --full."""
+    summary = report["summary"]
+    lines = [
+        f"# {report['homelab']}: action brief", "",
+        (f"{summary['nodes']} nodes, {summary['services']} services, {summary['storage']} storage systems, "
+         f"{summary['risks']} risks, {summary['unknowns']} unknowns."), "", "## Act first", "",
+    ]
+    actionable = [finding for finding in report["findings"] if finding["severity"] in {"critical", "high"}]
+    if not actionable:
+        lines.append("No critical or high-severity finding is established.")
+    for finding in actionable[:10]:
+        lines.append(
+            f"- [{finding['severity'].upper()}] `{finding['subject']}` — {finding['summary']} "
+            f"Next: {finding['recommendation']}"
+        )
+    if len(actionable) > 10:
+        lines.append(f"- {len(actionable) - 10} more high-priority findings are available in JSON or `homelab doctor --full`.")
+
+    readiness = report.get("recovery_readiness", {})
+    gaps = [service for service in readiness.get("services", []) if service["status"] != "proven"]
+    lines.extend(["", "## Recovery work queue", ""])
+    if not gaps:
+        lines.append("All modeled services have complete declared recovery evidence.")
+    for service in sorted(gaps, key=lambda item: (item["status"] != "unrecoverable", item["score"], item["service"])):
+        next_action = service["next_actions"][0] if service["next_actions"] else "Preserve current evidence."
+        missing = ", ".join(service.get("missing_evidence", [])) or "none"
+        lines.append(
+            f"- `{service['service']}` — {service['status']} ({service['score']}%); "
+            f"missing: {missing}. Next: {next_action}"
+        )
+    coverage = readiness.get("coverage", {})
+    if coverage.get("unmodeled"):
+        lines.append(
+            f"- Recovery scoring is intentionally scoped to {coverage.get('modeled', 0)} declared services; "
+            f"{coverage['unmodeled']} discovered endpoints are unmodeled, not scored as failed."
+        )
+
+    timeline = report.get("timeline")
+    lines.extend(["", "## Change signal", ""])
+    if not timeline:
+        lines.append("Change history is disabled or unavailable.")
+    elif timeline["status"] == "baseline":
+        lines.append("Baseline recorded; run `homelab changes` after the next observation.")
+    elif timeline["events"]:
+        lines.append(f"{len(timeline['events'])} tracked changes; inspect with `homelab changes` before intervention.")
+    else:
+        lines.append(f"No tracked changes since {timeline['previous_observed_at']}.")
+
+    lines.extend(["", "## Inventory gaps", ""])
+    lines.extend(f"- {unknown}" for unknown in report["unknowns"][:8])
+    if not report["unknowns"]:
+        lines.append("No inventory gaps detected.")
+    if len(report["unknowns"]) > 8:
+        lines.append(f"- {len(report['unknowns']) - 8} more gaps are available in JSON or `homelab doctor --full`.")
+    lines.extend([
+        "", "Use focused commands: `homelab investigate COMPONENT`, `homelab recovery`, "
+        "`homelab changes`, and `homelab updates COMPONENT`.",
+        "No changes have been made. This brief is evidence and a work queue, not authorization.",
+    ])
+    return "\n".join(lines) + "\n"
+
+
 def build_report(
     *,
     inventory_path: Path | None = None,
@@ -1843,6 +1960,12 @@ def render_recovery(report: dict[str, Any]) -> str:
         f"{counts['unproven']} unproven, {counts['unrecoverable']} unrecoverable.", "",
         readiness["principle"], "",
     ]
+    coverage = readiness.get("coverage", {})
+    if coverage.get("unmodeled"):
+        lines.extend([
+            f"Coverage: {coverage.get('modeled', 0)} modeled services; "
+            f"{coverage['unmodeled']} discovered endpoints are not scored.", "",
+        ])
     for service in readiness["services"]:
         lines.append(f"## {service['service']}: {service['status']} ({service['score']}%)")
         lines.append("")

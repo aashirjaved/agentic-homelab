@@ -16,6 +16,7 @@ from .doctor import (
     create_diagnostic_bundle,
     redact,
     render_changes,
+    render_doctor_summary,
     render_investigation,
     render_markdown,
     render_recovery,
@@ -58,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="Discover topology, risks, recovery evidence, and changes")
     add_evidence_options(doctor)
+    doctor.add_argument("--full", action="store_true", help="Render the complete report instead of the action brief")
     doctor.add_argument("--share", type=Path, help="Write a redacted Markdown report")
 
     investigate = subparsers.add_parser("investigate", help="Rank deterministic incident hypotheses")
@@ -141,7 +143,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.format == "json":
         print(json.dumps(json_view(report, args.command), indent=2, sort_keys=True))
     else:
-        print(render_view(report, args.command), end="")
+        if args.command == "doctor" and not args.full:
+            print(render_doctor_summary(report), end="")
+        else:
+            print(render_view(report, args.command), end="")
     if args.command == "doctor" and args.share:
         args.share.parent.mkdir(parents=True, exist_ok=True)
         args.share.write_text(redact(render_markdown(report, shared=True)), encoding="utf-8")

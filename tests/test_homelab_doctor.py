@@ -79,6 +79,20 @@ class HomelabDoctorTests(unittest.TestCase):
         mount = next(store for store in inventory["storage"] if store["id"] == "mount:media:movies")
         self.assertEqual(mount["server_host"], "pve")
 
+    def test_keyed_inventory_preserves_canonical_recovery_overlays(self):
+        inventory = doctor.normalize_inventory({
+            "nodes": {"apps": {"role": "docker", "services": {"immich": "http://192.0.2.1:2283"}}},
+            "services": [{"id": "immich", "kind": "photos", "recovery": {
+                "configuration_status": "version-controlled",
+            }}],
+            "storage": [{"id": "photos", "kind": "zfs-dataset", "backup_status": "fresh"}],
+            "restore_tests": [{"service": "immich", "status": "unknown"}],
+        })
+        immich = next(service for service in inventory["services"] if service["id"] == "immich")
+        self.assertEqual(immich["recovery"]["configuration_status"], "version-controlled")
+        self.assertEqual(inventory["storage"][0]["id"], "photos")
+        self.assertEqual(inventory["restore_tests"][0]["service"], "immich")
+
     def test_keyed_inventory_skips_planning_prose_as_a_storage_pool(self):
         inventory = doctor.normalize_inventory({"nodes": {
             "future-backup": {
@@ -374,6 +388,19 @@ class HomelabDoctorTests(unittest.TestCase):
         self.assertEqual(readiness["status"], "partial")
         self.assertIn("restore-test", readiness["missing_evidence"])
 
+    def test_top_level_restore_test_is_consumed_and_not_reported_missing(self):
+        inventory = {
+            "services": [{"id": "app", "kind": "web", "recovery": {
+                "configuration_status": "verified", "secrets_required": False, "data_required": False,
+                "restore_runbook": "docs/restore-app.md",
+            }}],
+            "restore_tests": [{"service": "app", "status": "passed", "tested_at": "2099-01-01T00:00:00Z"}],
+        }
+        report = doctor.inspect_inventory(inventory)
+        readiness = doctor.service_recovery_readiness(inventory["services"][0], inventory, [])
+        self.assertEqual(readiness["status"], "proven")
+        self.assertNotIn("No restore-test evidence is recorded.", report["unknowns"])
+
     def test_recovery_readiness_unrecoverable_when_data_or_key_is_missing(self):
         inventory = {"services": [{"id": "vault", "kind": "database", "uses_storage": ["data"], "recovery": {
             "configuration_status": "verified", "secrets_status": "lost", "restore_runbook": "restore.md",
@@ -387,11 +414,21 @@ class HomelabDoctorTests(unittest.TestCase):
         self.assertIn("data-backup", readiness["missing_evidence"])
 
     def test_attach_recovery_adds_service_level_finding(self):
-        inventory = {"homelab": {"name": "lab"}, "services": [{"id": "app", "kind": "web"}]}
+        inventory = {"homelab": {"name": "lab"}, "services": [{"id": "app", "kind": "web", "recovery_required": True}]}
         report = doctor.inspect_inventory(inventory)
         doctor.attach_recovery_readiness(report, inventory)
         self.assertEqual(report["recovery_readiness"]["summary"]["unproven"], 1)
         self.assertIn("service-recovery-unproven", {finding["code"] for finding in report["findings"]})
+
+    def test_recovery_scoring_does_not_mark_discovered_endpoints_as_failed(self):
+        inventory = {"services": [
+            {"id": "homepage", "kind": "dashboard", "recovery": {"data_required": False}},
+            {"id": "dockerproxy", "kind": "declared-service"},
+        ]}
+        report = doctor.inspect_inventory(inventory)
+        doctor.attach_recovery_readiness(report, inventory, include_findings=False)
+        self.assertEqual([item["service"] for item in report["recovery_readiness"]["services"]], ["homepage"])
+        self.assertEqual(report["recovery_readiness"]["coverage"]["unmodeled"], 1)
 
     def test_unknown_failure_domain_never_counts_as_separated(self):
         inventory = {"services": [{"id": "app", "kind": "web", "uses_storage": ["data"], "recovery": {

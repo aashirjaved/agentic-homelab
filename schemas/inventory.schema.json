@@ -42,6 +42,10 @@
     "agents": {
       "type": "array",
       "items": { "$ref": "#/$defs/agent" }
+    },
+    "restore_tests": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/restoreTest" }
     }
   },
   "$defs": {
@@ -95,7 +99,8 @@
             "secrets_status": { "type": "string" },
             "data_required": { "type": "boolean" },
             "restore_runbook": { "type": ["string", "boolean"] },
-            "last_restore_test": { "type": "string" }
+            "last_restore_test": { "type": "string" },
+            "restore_test": { "$ref": "#/$defs/restoreTestEvidence" }
           },
           "additionalProperties": true
         },
@@ -140,6 +145,36 @@
         "model_route_policy": { "type": "string" }
       },
       "additionalProperties": true
+    },
+    "restoreTestEvidence": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "enum": ["passed", "failed", "unknown"] },
+        "tested_at": { "type": "string" },
+        "scope": { "type": "string" },
+        "evidence": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "restoreTest": {
+      "allOf": [
+        { "$ref": "#/$defs/restoreTestEvidence" },
+        {
+          "type": "object",
+          "properties": {
+            "service": { "type": "string" },
+            "service_id": { "type": "string" },
+            "services": { "type": "array", "items": { "type": "string" } }
+          },
+          "anyOf": [
+            { "required": ["service"] },
+            { "required": ["service_id"] },
+            { "required": ["services"] }
+          ]
+        }
+      ]
     },
     "healthcheck": {
       "type": "object",

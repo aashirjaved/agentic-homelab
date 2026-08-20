@@ -67,6 +67,13 @@ class CliTests(unittest.TestCase):
         _, output, _ = self.run_cli(["doctor", "--format", "json"])
         self.assertEqual(json.loads(output)["homelab"], "test-lab")
 
+    def test_doctor_defaults_to_action_brief_and_full_is_opt_in(self):
+        _, brief, _ = self.run_cli(["doctor"])
+        _, full, _ = self.run_cli(["doctor", "--full"])
+        self.assertTrue(brief.startswith("# test-lab: action brief"))
+        self.assertIn("# test-lab: explained", full)
+        self.assertNotIn("## Homelab graph", brief)
+
     def test_share_creates_the_bundle_instead_of_aliasing_doctor(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "bundle"

@@ -161,6 +161,11 @@ Statuses are conservative:
 Unknown is never counted as passing. The percentage is evidence completeness,
 not a probability that restoration will succeed.
 
+Scoring is opt-in per service: add a non-empty `recovery` block or set
+`recovery_required: true`. Automatically discovered endpoints remain visible in
+the coverage count but are not each emitted as zero-score failures. This keeps
+the work queue useful in labs with many dashboards, sidecars, and helper ports.
+
 ```yaml
 services:
   - id: jellyfin
@@ -170,7 +175,11 @@ services:
       configuration_status: version-controlled
       secrets_required: false
       restore_runbook: docs/restore-jellyfin.md
-      last_restore_test: 2026-07-01T12:00:00Z
+      restore_test:
+        status: passed
+        tested_at: 2026-07-01T12:00:00Z
+        scope: restored configuration into an isolated test container
+        evidence: docs/drills/2026-07-jellyfin.md
 storage:
   - id: media
     kind: nas
@@ -181,6 +190,11 @@ storage:
 
 The doctor only evaluates declared evidence. It does not open runbook paths or
 perform a restore. Restore drills remain separately approved operations.
+
+The legacy scalar `last_restore_test` remains supported. A central
+`restore_tests` list can instead identify one service with `service`, or several
+with `services`; only a successful status plus a parseable recent timestamp
+passes the restore-test check.
 
 ## Update intelligence
 

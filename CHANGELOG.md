@@ -7,7 +7,19 @@ changes, safety changes, and compatibility notes.
 
 ## Unreleased
 
-- Nothing yet.
+### Added
+
+- Structured service-local and top-level restore-test evidence, including
+  coverage reporting for services intentionally left outside recovery scoring.
+- A concise default Doctor action brief for operators and agents; the former
+  complete Markdown report remains available with `homelab doctor --full`.
+
+### Fixed
+
+- Keyed inventory normalization now preserves canonical service, storage, and
+  restore-test overlays instead of discarding their recovery metadata.
+- Discovered helper endpoints are no longer scored as individual zero-evidence
+  recovery failures.
 
 ## 0.2.1 - 2026-08-14
 
